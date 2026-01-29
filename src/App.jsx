@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Save, FolderOpen, RefreshCw, FileDown, Plus, Trash2, Info, Activity, User, Briefcase, Calculator, FileText, CheckSquare, Stethoscope, X, Eye, Upload } from 'lucide-react';
+import { Save, FolderOpen, RefreshCw, FileDown, Plus, Trash2, Info, Activity, User, Briefcase, Calculator, FileText, CheckSquare, Stethoscope, X, Eye, Upload, ChevronDown } from 'lucide-react';
 
 // --- 1. CONSTANTS & PRESETS ---
 const JOB_PRESETS = [
@@ -115,6 +115,7 @@ export default function App() {
   const [showPreview, setShowPreview] = useState(false);
   
   const fileInputRef = useRef(null);
+  const resultSectionRef = useRef(null);
 
   const activePatient = patients.find(p => p.id === activeTabId) || patients[0];
 
@@ -128,6 +129,11 @@ export default function App() {
     setPatients(prev => prev.map(p => 
       p.id === activeTabId ? { ...p, [section]: { ...p[section], [field]: value } } : p
     ));
+  };
+
+  // Scroll Helper
+  const scrollToResults = () => {
+    resultSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   // --- GLOBAL EFFECTS ---
@@ -444,39 +450,45 @@ export default function App() {
 
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col">
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col pb-20 lg:pb-0">
+      {/* --- HEADER --- */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
         <div className="max-w-[1600px] mx-auto px-4">
             <div className="h-14 flex items-center justify-between">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                     <Activity className="text-blue-600" size={24} />
-                    <h1 className="text-lg font-bold text-slate-800">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.2</span></h1>
+                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.3 (Mobile)</span></h1>
+                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.3</h1>
                 </div>
-                <div className="flex gap-2">
+                
+                {/* Scrollable Toolbar for Mobile */}
+                <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
                     <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".csv, .xlsx, .xls" className="hidden" />
-                    <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 text-xs text-blue-800 hover:bg-blue-100 rounded border border-blue-200 bg-blue-50 font-bold"><Upload size={14}/> 엑셀 일괄입력</button>
-                    <button onClick={() => setShowPreview(true)} className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100 rounded border border-slate-200"><Eye size={14}/> 미리보기</button>
-                    <button onClick={handleLoad} className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded"><FolderOpen size={14}/> 불러오기</button>
-                    <button onClick={handleSave} className="flex items-center gap-1 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 rounded font-medium"><Save size={14}/> 전체 저장</button>
-                    <button onClick={handleExportXLSX} disabled={!isExcelReady} className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded font-medium border ${isExcelReady ? 'text-green-700 hover:bg-green-50 border-green-200' : 'text-gray-400 border-gray-200 cursor-not-allowed'}`}>
-                    <FileDown size={14}/> {isExcelReady ? '전체 Excel 저장' : '로딩중...'}
+                    <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 text-xs text-blue-800 hover:bg-blue-100 rounded border border-blue-200 bg-blue-50 font-bold whitespace-nowrap"><Upload size={14}/> <span className="hidden md:inline">엑셀 일괄입력</span></button>
+                    <button onClick={() => setShowPreview(true)} className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100 rounded border border-slate-200 whitespace-nowrap"><Eye size={14}/> <span className="hidden md:inline">미리보기</span></button>
+                    <button onClick={handleLoad} className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded whitespace-nowrap"><FolderOpen size={14}/> <span className="hidden md:inline">불러오기</span></button>
+                    <button onClick={handleSave} className="flex items-center gap-1 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 rounded font-medium whitespace-nowrap"><Save size={14}/> <span className="hidden md:inline">저장</span></button>
+                    <button onClick={handleExportXLSX} disabled={!isExcelReady} className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded font-medium border whitespace-nowrap ${isExcelReady ? 'text-green-700 hover:bg-green-50 border-green-200' : 'text-gray-400 border-gray-200 cursor-not-allowed'}`}>
+                        <FileDown size={14}/> <span className="hidden md:inline">{isExcelReady ? 'Excel 저장' : '로딩중'}</span>
                     </button>
-                    <button onClick={handleReset} className="flex items-center gap-1 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 rounded"><RefreshCw size={14}/> 초기화</button>
+                    <button onClick={handleReset} className="flex items-center gap-1 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 rounded whitespace-nowrap"><RefreshCw size={14}/> <span className="hidden md:inline">초기화</span></button>
                 </div>
             </div>
-            <div className="flex items-center gap-1 overflow-x-auto pb-0 -mb-px">
+            
+            <div className="flex items-center gap-1 overflow-x-auto pb-0 -mb-px no-scrollbar">
                 {patients.map(p => (
-                    <div key={p.id} onClick={() => setActiveTabId(p.id)} className={`group flex items-center gap-2 px-4 py-2 border-t border-l border-r rounded-t-lg cursor-pointer select-none text-sm min-w-[120px] max-w-[200px] ${activeTabId === p.id ? 'bg-slate-50 border-slate-200 border-b-transparent font-bold text-blue-700 relative z-10' : 'bg-gray-100 border-transparent text-slate-500 hover:bg-gray-50'}`}>
+                    <div key={p.id} onClick={() => setActiveTabId(p.id)} className={`group flex items-center gap-2 px-4 py-2 border-t border-l border-r rounded-t-lg cursor-pointer select-none text-sm min-w-[120px] max-w-[200px] shrink-0 ${activeTabId === p.id ? 'bg-slate-50 border-slate-200 border-b-transparent font-bold text-blue-700 relative z-10' : 'bg-gray-100 border-transparent text-slate-500 hover:bg-gray-50'}`}>
                         <User size={14} className={activeTabId === p.id ? "text-blue-500" : "text-slate-400"}/>
                         <span className="truncate flex-1">{p.basicInfo.name || p.name}</span>
                         <button onClick={(e) => removeTab(e, p.id)} className="opacity-0 group-hover:opacity-100 hover:text-red-500 p-0.5 rounded"><X size={12}/></button>
                     </div>
                 ))}
-                <button onClick={addTab} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors" title="새 환자 추가"><Plus size={18}/></button>
+                <button onClick={addTab} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors shrink-0" title="새 환자 추가"><Plus size={18}/></button>
             </div>
         </div>
       </header>
 
+      {/* --- PREVIEW MODAL --- */}
       {showPreview && activePatient && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-[100] flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-5xl h-[90vh] rounded-lg shadow-2xl flex flex-col">
@@ -635,7 +647,7 @@ export default function App() {
         <div className="max-w-[1600px] mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-6 space-y-6">
                 
-                <section className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
+                <section className="bg-white p-4 md:p-5 rounded-lg shadow-sm border border-slate-200">
                     <div className="flex items-center gap-2 mb-4 text-blue-800 border-b pb-2">
                         <User size={20}/>
                         <h2 className="font-bold text-lg">1. 기본정보</h2>
@@ -678,7 +690,7 @@ export default function App() {
                     </div>
                 </section>
 
-                <section className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
+                <section className="bg-white p-4 md:p-5 rounded-lg shadow-sm border border-slate-200">
                     <div className="flex items-center justify-between mb-4 border-b pb-2">
                         <div className="flex items-center gap-2 text-blue-800">
                             <FileText size={20}/>
@@ -739,7 +751,7 @@ export default function App() {
                     </div>
                 </section>
 
-                <section className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
+                <section className="bg-white p-4 md:p-5 rounded-lg shadow-sm border border-slate-200">
                     <div className="flex items-center justify-between mb-4 border-b pb-2">
                         <div className="flex items-center gap-2 text-blue-800">
                             <Briefcase size={20}/>
@@ -814,7 +826,7 @@ export default function App() {
                 </section>
             </div>
 
-            <div className="lg:col-span-6 space-y-6">
+            <div className="lg:col-span-6 space-y-6" ref={resultSectionRef}>
                 <div className="bg-white p-6 rounded-lg shadow-lg border border-blue-200 sticky top-24">
                     <div className="flex items-center gap-2 mb-6 text-blue-900 border-b pb-2">
                         <Calculator size={20}/>
@@ -967,6 +979,24 @@ export default function App() {
             </div>
         </div>
       </main>
+
+      {/* --- MOBILE STICKY BOTTOM BAR --- */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-3 lg:hidden shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] z-40 flex items-center justify-between safe-area-bottom">
+          <div>
+              <div className="text-[10px] text-slate-500 mb-0.5">누적 신체부담 (평균)</div>
+              <div className="flex items-baseline gap-2">
+                  <span className="font-extrabold text-xl text-blue-600 leading-none">
+                      {activePatient.calculatedResult.avgRelevance.toFixed(1)}%
+                  </span>
+                  <span className={`text-sm font-bold ${activePatient.calculatedResult.judgment === '충분함' ? 'text-green-600' : 'text-red-500'}`}>
+                      {activePatient.calculatedResult.judgment}
+                  </span>
+              </div>
+          </div>
+          <button onClick={scrollToResults} className="bg-blue-600 active:bg-blue-700 text-white px-4 py-2.5 rounded-lg font-bold text-sm shadow-md transition-transform active:scale-95 flex items-center gap-1">
+              결과 상세 <ChevronDown size={16}/>
+          </button>
+      </div>
     </div>
   );
 }
