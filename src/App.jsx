@@ -1,6 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Save, FolderOpen, RefreshCw, FileDown, Plus, Trash2, Info, Activity, User, Briefcase, Calculator, FileText, CheckSquare, Stethoscope, X, Eye, Upload, ChevronDown } from 'lucide-react';
 
+/* [🚀 오프라인/일렉트론 배포를 위한 설정 가이드]
+  1. 프로젝트 폴더 터미널에서 `npm install xlsx`를 실행하여 라이브러리를 설치하세요.
+  2. 아래 `import * as XLSX_LIB ...` 코드의 주석(//)을 해제하세요.
+  3. 코드 하단의 `useEffect` (CDN 로딩 부분)을 삭제하거나 주석 처리하세요.
+  4. `handleExportXLSX` 등의 함수에서 `window.XLSX` 대신 `XLSX_LIB`를 사용하도록 수정하세요.
+*/
+
+// import * as XLSX_LIB from 'xlsx'; // <--- 오프라인 배포 시 주석 해제
+
 // --- 1. CONSTANTS & PRESETS ---
 const JOB_PRESETS = [
   { category: '직접입력', jobName: '', weight: 0, squatting: 0 },
@@ -22,6 +31,13 @@ const AUX_FACTORS = [
   { id: 'impact', label: '무릎 접촉/충격' },
   { id: 'jump', label: '뛰어내리기' },
 ];
+
+const REASON_LABELS = {
+  unrelated: "신체부담과 무관 (외상 등)",
+  mild: "연령 대비 퇴행성 변화 경미",
+  expired: "업무 중단 후 상당기간 경과",
+  other: "기타 의학적 소견"
+};
 
 // --- 2. LOGIC HELPERS ---
 
@@ -84,7 +100,8 @@ const createNewPatient = (id = Date.now(), name = '새 환자') => ({
         klgGrade: { R: '0', L: '0' },
         confirmedStatus: { R: 'confirm', L: 'confirm' }, 
         relevance: { R: 'low', L: 'low' }, 
-        relevanceReason: { R: 'unrelated', L: 'unrelated' } 
+        relevanceReason: { R: 'unrelated', L: 'unrelated' },
+        relevanceReasonText: { R: '', L: '' } 
       }
     ],
     notes: ''
@@ -137,6 +154,9 @@ export default function App() {
   };
 
   // --- GLOBAL EFFECTS ---
+  
+  // [미리보기 환경용] CDN Load for XLSX
+  // 오프라인 배포 시 이 useEffect는 제거해도 됩니다.
   useEffect(() => {
     if (!window.XLSX) {
       const script = document.createElement('script');
@@ -237,6 +257,20 @@ export default function App() {
     updateActivePatient('jobs', updatedJobs);
   };
 
+  const handleEvidenceChange = (jobId, key) => {
+    const updatedJobs = activePatient.jobs.map(job => 
+        job.id === jobId ? { ...job, evidence: { ...job.evidence, [key]: !job.evidence[key] } } : job
+    );
+    updateActivePatient('jobs', updatedJobs);
+  };
+
+  const handleAuxiliaryChange = (jobId, key) => {
+    const updatedJobs = activePatient.jobs.map(job => 
+        job.id === jobId ? { ...job, auxiliary: { ...job.auxiliary, [key]: !job.auxiliary[key] } } : job
+    );
+    updateActivePatient('jobs', updatedJobs);
+  };
+
   const addJob = () => {
     const newJob = { 
         id: Date.now(), jobName: '', startDate: '', endDate: '', duration: 0, weight: 0, squatting: 0, burden: determineBurdenLevel(0,0),
@@ -255,17 +289,20 @@ export default function App() {
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (!window.XLSX) { alert("엑셀 라이브러리 로딩 중..."); return; }
+    
+    // [중요] 오프라인 배포 시: window.XLSX 대신 XLSX_LIB 사용
+    const XL = window.XLSX; // 오프라인 시: const XL = XLSX_LIB; 
+    if (!XL) { alert("엑셀 라이브러리 로딩 중..."); return; }
 
     const reader = new FileReader();
     reader.onload = (evt) => {
       const data = evt.target.result;
-      const workbook = window.XLSX.read(data, { type: 'binary' });
+      const workbook = XL.read(data, { type: 'binary' });
       const newImportedPatients = [];
 
       workbook.SheetNames.forEach((sheetName, idx) => {
           const worksheet = workbook.Sheets[sheetName];
-          const jsonData = window.XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          const jsonData = XL.utils.sheet_to_json(worksheet, { header: 1 });
           if(!jsonData || jsonData.length === 0) return;
 
           let p = createNewPatient(Date.now() + idx, sheetName); 
@@ -339,8 +376,11 @@ export default function App() {
   };
 
   const handleExportXLSX = () => {
-    if (!window.XLSX) return;
-    const wb = window.XLSX.utils.book_new();
+    // [중요] 오프라인 배포 시: window.XLSX 대신 XLSX_LIB 사용
+    const XL = window.XLSX; // 오프라인 시: const XL = XLSX_LIB; 
+    if (!XL) return;
+
+    const wb = XL.utils.book_new();
     
     patients.forEach(p => {
         const wsData = [];
@@ -411,8 +451,16 @@ export default function App() {
             if(d.side === 'B' || d.side === 'R') res += `우측(${d.relevance.R === 'high' ? '높음' : '낮음'}) `;
             if(d.side === 'B' || d.side === 'L') res += `좌측(${d.relevance.L === 'high' ? '높음' : '낮음'}) `;
             let reasons = [];
-            if ((d.side === 'B' || d.side === 'R') && d.relevance.R === 'low') reasons.push(`우측사유: ${d.relevanceReason.R}`);
-            if ((d.side === 'B' || d.side === 'L') && d.relevance.L === 'low') reasons.push(`좌측사유: ${d.relevanceReason.L}`);
+            if ((d.side === 'B' || d.side === 'R') && d.relevance.R === 'low') {
+                let reasonText = REASON_LABELS[d.relevanceReason.R];
+                if(d.relevanceReason.R === 'other' && d.relevanceReasonText?.R) reasonText += `: ${d.relevanceReasonText.R}`;
+                reasons.push(`우측사유: ${reasonText}`);
+            }
+            if ((d.side === 'B' || d.side === 'L') && d.relevance.L === 'low') {
+                let reasonText = REASON_LABELS[d.relevanceReason.L];
+                if(d.relevanceReason.L === 'other' && d.relevanceReasonText?.L) reasonText += `: ${d.relevanceReasonText.L}`;
+                reasons.push(`좌측사유: ${reasonText}`);
+            }
             if(reasons.length > 0) res += ` [${reasons.join(', ')}]`;
             return res;
         }).join("\n");
@@ -421,15 +469,15 @@ export default function App() {
         wsData.push(["복귀 고려사항", p.assessment.returnConsideration]);
         merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
 
-        const ws = window.XLSX.utils.aoa_to_sheet(wsData);
+        const ws = XL.utils.aoa_to_sheet(wsData);
         ws['!merges'] = merges;
         ws['!cols'] = [{ wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 20 }];
         
         const safeName = (p.basicInfo.name || p.name || 'Sheet').replace(/[*/?:[\]]/g, '');
-        window.XLSX.utils.book_append_sheet(wb, ws, safeName.substring(0, 30));
+        XL.utils.book_append_sheet(wb, ws, safeName.substring(0, 30));
     });
 
-    window.XLSX.writeFile(wb, `업무관련성평가_통합_${new Date().toISOString().slice(0,10)}.xlsx`);
+    XL.writeFile(wb, `업무관련성평가_통합_${new Date().toISOString().slice(0,10)}.xlsx`);
   };
 
   const handleReset = () => { if(confirm("초기화 하시겠습니까?")) window.location.reload(); };
@@ -451,24 +499,22 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col pb-20 lg:pb-0">
-      {/* --- HEADER --- */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
         <div className="max-w-[1600px] mx-auto px-4">
             <div className="h-14 flex items-center justify-between">
                 <div className="flex items-center gap-2 shrink-0">
                     <Activity className="text-blue-600" size={24} />
-                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.3 (Mobile)</span></h1>
-                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.3</h1>
+                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.9 (Fixed)</span></h1>
+                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.9</h1>
                 </div>
                 
-                {/* Scrollable Toolbar for Mobile */}
                 <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
                     <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".csv, .xlsx, .xls" className="hidden" />
                     <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 text-xs text-blue-800 hover:bg-blue-100 rounded border border-blue-200 bg-blue-50 font-bold whitespace-nowrap"><Upload size={14}/> <span className="hidden md:inline">엑셀 일괄입력</span></button>
                     <button onClick={() => setShowPreview(true)} className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100 rounded border border-slate-200 whitespace-nowrap"><Eye size={14}/> <span className="hidden md:inline">미리보기</span></button>
                     <button onClick={handleLoad} className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded whitespace-nowrap"><FolderOpen size={14}/> <span className="hidden md:inline">불러오기</span></button>
                     <button onClick={handleSave} className="flex items-center gap-1 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 rounded font-medium whitespace-nowrap"><Save size={14}/> <span className="hidden md:inline">저장</span></button>
-                    <button onClick={handleExportXLSX} disabled={!isExcelReady} className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded font-medium border whitespace-nowrap ${isExcelReady ? 'text-green-700 hover:bg-green-50 border-green-200' : 'text-gray-400 border-gray-200 cursor-not-allowed'}`}>
+                    <button onClick={handleExportXLSX} className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded font-medium border whitespace-nowrap ${isExcelReady ? 'text-green-700 hover:bg-green-50 border-green-200' : 'text-gray-400 border-gray-200 cursor-not-allowed'}`}>
                         <FileDown size={14}/> <span className="hidden md:inline">{isExcelReady ? 'Excel 저장' : '로딩중'}</span>
                     </button>
                     <button onClick={handleReset} className="flex items-center gap-1 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 rounded whitespace-nowrap"><RefreshCw size={14}/> <span className="hidden md:inline">초기화</span></button>
@@ -488,7 +534,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* --- PREVIEW MODAL --- */}
       {showPreview && activePatient && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-[100] flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-5xl h-[90vh] rounded-lg shadow-2xl flex flex-col">
@@ -620,6 +665,20 @@ export default function App() {
                                 let res = `${d.name}: `;
                                 if(d.side === 'B' || d.side === 'R') res += `우측(${d.relevance.R === 'high' ? '높음' : '낮음'}) `;
                                 if(d.side === 'B' || d.side === 'L') res += `좌측(${d.relevance.L === 'high' ? '높음' : '낮음'}) `;
+                                
+                                let reasons = [];
+                                if ((d.side === 'B' || d.side === 'R') && d.relevance.R === 'low') {
+                                    let rText = REASON_LABELS[d.relevanceReason.R];
+                                    if(d.relevanceReason.R === 'other' && d.relevanceReasonText?.R) rText += `: ${d.relevanceReasonText.R}`;
+                                    reasons.push(`우측사유: ${rText}`);
+                                }
+                                if ((d.side === 'B' || d.side === 'L') && d.relevance.L === 'low') {
+                                    let rText = REASON_LABELS[d.relevanceReason.L];
+                                    if(d.relevanceReason.L === 'other' && d.relevanceReasonText?.L) rText += `: ${d.relevanceReasonText.L}`;
+                                    reasons.push(`좌측사유: ${rText}`);
+                                }
+                                if(reasons.length > 0) res += ` [${reasons.join(', ')}]`;
+
                                 return <div key={i} className="mb-1 last:mb-0">{res}</div>
                              })}
                           </td>
@@ -699,7 +758,8 @@ export default function App() {
                         <button onClick={() => {
                             const newDiag = { 
                                 id: Date.now(), code: '', name: '', side: 'R', 
-                                klgGrade: { R: '0', L: '0' }, confirmedStatus: { R: 'confirm', L: 'confirm' }, relevance: { R: 'low', L: 'low' }, relevanceReason: { R: 'unrelated', L: 'unrelated' } 
+                                klgGrade: { R: '0', L: '0' }, confirmedStatus: { R: 'confirm', L: 'confirm' }, relevance: { R: 'low', L: 'low' }, 
+                                relevanceReason: { R: 'unrelated', L: 'unrelated' }, relevanceReasonText: { R: '', L: '' }
                             };
                             updateActivePatientDeep('medicalInfo', 'diagnoses', [...activePatient.medicalInfo.diagnoses, newDiag]);
                         }} className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 flex items-center gap-1">
@@ -801,6 +861,16 @@ export default function App() {
                                         </div>
                                     </div>
 
+                                    <div className="mb-4 bg-slate-50 p-2 rounded border border-slate-100">
+                                        <label className="block text-xs font-bold text-slate-500 mb-2">근무 이력 근거자료 (체크)</label>
+                                        <div className="flex gap-3 text-xs">
+                                            <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.health} onChange={()=>handleEvidenceChange(job.id, 'health')}/> 건강/연금</label>
+                                            <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.employ} onChange={()=>handleEvidenceChange(job.id, 'employ')}/> 고용/산재</label>
+                                            <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.income} onChange={()=>handleEvidenceChange(job.id, 'income')}/> 소득금액</label>
+                                            <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.etc} onChange={()=>handleEvidenceChange(job.id, 'etc')}/> 기타</label>
+                                        </div>
+                                    </div>
+
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-white p-3 rounded border border-slate-200">
                                         <div>
                                             <label className="block text-xs font-bold text-slate-700 mb-1">중량물 (kg/일)</label>
@@ -811,6 +881,21 @@ export default function App() {
                                             <label className="block text-xs font-bold text-slate-700 mb-1">쪼그려앉기 (분/일)</label>
                                             <input type="number" className="w-full p-2 border rounded text-right" placeholder="0"
                                                 value={job.squatting} onChange={(e)=>handleJobChange(job.id, 'squatting', e.target.value)}/>
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-3">
+                                        <div className="flex items-center gap-1 mb-2">
+                                            <CheckSquare size={14} className="text-slate-400"/>
+                                            <label className="text-xs font-bold text-slate-600">보조 노출요인 (해당 시 체크)</label>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-xs">
+                                            {AUX_FACTORS.map(factor => (
+                                            <label key={factor.id} className="flex items-center gap-1 cursor-pointer hover:bg-slate-100 p-1 rounded">
+                                                <input type="checkbox" checked={job.auxiliary[factor.id]} onChange={()=>handleAuxiliaryChange(job.id, factor.id)}/> 
+                                                {factor.label}
+                                            </label>
+                                            ))}
                                         </div>
                                     </div>
                                     
@@ -947,17 +1032,27 @@ export default function App() {
                                                 {diag.relevance[side] === 'low' && (
                                                     <div className="mt-3 animate-fadeIn">
                                                         <div className={`text-sm font-bold mb-1 ${side==='R'?'text-blue-800':'text-green-800'}`}>낮음 사유</div>
-                                                        <select className={`w-full text-base p-2.5 border rounded bg-white outline-none text-slate-700 ${side==='R'?'focus:ring-1 focus:ring-blue-500':'focus:ring-1 focus:ring-green-500'}`}
+                                                        <select className={`w-full text-base p-2.5 border rounded bg-white outline-none text-slate-700 mb-2 ${side==='R'?'focus:ring-1 focus:ring-blue-500':'focus:ring-1 focus:ring-green-500'}`}
                                                             value={diag.relevanceReason[side]} 
                                                             onChange={(e) => {
                                                                 const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, relevanceReason: { ...d.relevanceReason, [side]: e.target.value } } : d);
                                                                 updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
                                                             }}>
-                                                            <option value="unrelated">신체부담과 무관 (외상 등)</option>
-                                                            <option value="mild">연령 대비 퇴행성 변화 경미</option>
-                                                            <option value="expired">업무 중단 후 상당기간 경과</option>
-                                                            <option value="other">기타 의학적 소견</option>
+                                                            {Object.entries(REASON_LABELS).map(([key, label]) => (
+                                                                <option key={key} value={key}>{label}</option>
+                                                            ))}
                                                         </select>
+                                                        {diag.relevanceReason[side] === 'other' && (
+                                                            <input type="text" className="w-full p-2 mt-2 border rounded text-sm focus:ring-1 focus:ring-slate-400 outline-none"
+                                                                placeholder="상세 사유를 입력하세요"
+                                                                value={diag.relevanceReasonText?.[side] || ''}
+                                                                onChange={(e) => {
+                                                                    const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { 
+                                                                        ...d, relevanceReasonText: { ...d.relevanceReasonText, [side]: e.target.value } 
+                                                                    } : d);
+                                                                    updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                                                }}/>
+                                                        )}
                                                     </div>
                                                 )}
                                             </div>
