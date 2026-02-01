@@ -23,6 +23,9 @@ const JOB_PRESETS = [
   { category: '서비스', jobName: '조리 종사자', weight: 500, squatting: 60, desc: '식자재 운반 및 낮은 자세 세척' },
 ];
 
+const BODY_PARTS = ["목", "어깨", "팔꿈치", "손목", "손가락", "허리", "무릎", "고관절", "발목"];
+const BILATERAL_PARTS = ["어깨", "팔꿈치", "손목", "손가락", "무릎", "고관절", "발목"];
+
 const AUX_FACTORS = [
   { id: 'stairs', label: '계단 오르내리기' },
   { id: 'twisting', label: '무릎 비틀림' },
@@ -33,10 +36,11 @@ const AUX_FACTORS = [
 ];
 
 const REASON_LABELS = {
+  insufficient_burden: "누적신체부담이 충분하지 않음",
   unrelated: "신체부담과 무관 (외상 등)",
   mild: "연령 대비 퇴행성 변화 경미",
   expired: "업무 중단 후 상당기간 경과",
-  other: "기타 의학적 소견"
+  other: "기타 사유"
 };
 
 // --- 2. LOGIC HELPERS ---
@@ -85,6 +89,28 @@ const calculateBMI = (heightCm, weightKg) => {
 
 const getKlgText = (val) => val === '0' ? '해당없음' : `${val}등급`;
 
+// Helper: Convert decimal years to "X년 Y개월"
+const formatDurationText = (decimalYears) => {
+    if (!decimalYears || isNaN(decimalYears)) return "0년 0개월";
+    const years = Math.floor(decimalYears);
+    const months = Math.round((decimalYears - years) * 12);
+    if (months === 12) return `${years + 1}년 0개월`;
+    return `${years}년 ${months}개월`;
+};
+
+// Helper: Format Diagnosis String: (Code) (Name) (Part) - Removed Side for Export Header
+const formatDiagnosisName = (d) => {
+    let parts = [];
+    if(d.code) parts.push(`(${d.code})`);
+    if(d.name) parts.push(`(${d.name})`);
+    parts.push(`(${d.bodyPart})`);
+    
+    return parts.join(' ');
+};
+
+// Checkbox format helper for Excel
+const toCheck = (label, isChecked) => `[${isChecked ? 'V' : '  '}] ${label}`;
+
 // --- 3. STATE FACTORY ---
 const createNewPatient = (id = Date.now(), name = '새 환자') => ({
   id,
@@ -96,11 +122,12 @@ const createNewPatient = (id = Date.now(), name = '새 환자') => ({
   medicalInfo: {
     diagnoses: [
       { 
-        id: Date.now() + 1, code: '', name: '', side: 'R', 
+        id: Date.now() + 1, code: '', name: '', 
+        bodyPart: '무릎', side: 'R', 
         klgGrade: { R: '0', L: '0' },
         confirmedStatus: { R: 'confirm', L: 'confirm' }, 
         relevance: { R: 'low', L: 'low' }, 
-        relevanceReason: { R: 'unrelated', L: 'unrelated' },
+        relevanceReason: { R: 'insufficient_burden', L: 'insufficient_burden' },
         relevanceReasonText: { R: '', L: '' } 
       }
     ],
@@ -108,7 +135,9 @@ const createNewPatient = (id = Date.now(), name = '새 환자') => ({
   },
   jobs: [
     { 
-      id: Date.now() + 2, jobName: '', startDate: '', endDate: '', duration: 0, weight: 0, squatting: 0, burden: determineBurdenLevel(0,0),
+      id: Date.now() + 2, jobName: '', startDate: '', endDate: '', 
+      durationYears: 0, durationMonths: 0, duration: 0, 
+      weight: 0, squatting: 0, burden: determineBurdenLevel(0,0),
       evidence: { health: false, employ: false, income: false, etc: false },
       auxiliary: { stairs: false, twisting: false, startStop: false, narrow: false, impact: false, jump: false }
     }
@@ -155,8 +184,7 @@ export default function App() {
 
   // --- GLOBAL EFFECTS ---
   
-  // [미리보기 환경용] CDN Load for XLSX
-  // 오프라인 배포 시 이 useEffect는 제거해도 됩니다.
+  // CDN Load for XLSX (For preview environment)
   useEffect(() => {
     if (!window.XLSX) {
       const script = document.createElement('script');
@@ -174,18 +202,11 @@ export default function App() {
         const age = calculateAge(p.basicInfo.birthDate, p.basicInfo.injuryDate);
         const bmi = calculateBMI(p.basicInfo.height, p.basicInfo.weight);
 
+        // Recalculate Burden Level only
         let updatedJobs = p.jobs.map(job => {
             const burden = determineBurdenLevel(Number(job.weight), Number(job.squatting));
-            let duration = job.duration;
-            if (job.startDate && job.endDate) {
-                const start = new Date(job.startDate);
-                const end = new Date(job.endDate);
-                const diffTime = Math.abs(end - start);
-                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-                duration = (diffDays / 365.25).toFixed(2);
-            }
-            if (job.duration === duration && job.burden.level === burden.level) return job;
-            return { ...job, duration, burden };
+            const totalDuration = (Number(job.durationYears) || 0) + ((Number(job.durationMonths) || 0) / 12);
+            return { ...job, burden, duration: totalDuration };
         });
 
         const effectiveAgeDiff = Math.max(0, age - 30);
@@ -222,7 +243,10 @@ export default function App() {
             }
         };
     }));
-  }, [JSON.stringify(patients.map(p => ({ b: p.basicInfo, j: p.jobs })))]); 
+  }, [JSON.stringify(patients.map(p => ({ 
+      b: p.basicInfo, 
+      j: p.jobs.map(j=>({w:j.weight, s:j.squatting, dy:j.durationYears, dm:j.durationMonths})) 
+  })))]); 
 
   // --- HANDLERS ---
   const addTab = () => {
@@ -251,8 +275,30 @@ export default function App() {
   };
 
   const handleJobChange = (jobId, field, value) => {
+    const currentJob = activePatient.jobs.find(j => j.id === jobId);
+    
+    let updates = { [field]: value };
+
+    // Auto-calculate duration if dates change
+    if (field === 'startDate' || field === 'endDate') {
+        const start = field === 'startDate' ? new Date(value) : new Date(currentJob.startDate);
+        const end = field === 'endDate' ? new Date(value) : new Date(currentJob.endDate);
+        
+        if (start && end && !isNaN(start) && !isNaN(end)) {
+            const diffTime = Math.abs(end - start);
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+            const decimalYears = diffDays / 365.25;
+            
+            const years = Math.floor(decimalYears);
+            const months = Math.round((decimalYears - years) * 12);
+            
+            updates.durationYears = years + (months === 12 ? 1 : 0);
+            updates.durationMonths = months === 12 ? 0 : months;
+        }
+    }
+
     const updatedJobs = activePatient.jobs.map(job => 
-        job.id === jobId ? { ...job, [field]: value } : job
+        job.id === jobId ? { ...job, ...updates } : job
     );
     updateActivePatient('jobs', updatedJobs);
   };
@@ -273,7 +319,7 @@ export default function App() {
 
   const addJob = () => {
     const newJob = { 
-        id: Date.now(), jobName: '', startDate: '', endDate: '', duration: 0, weight: 0, squatting: 0, burden: determineBurdenLevel(0,0),
+        id: Date.now(), jobName: '', startDate: '', endDate: '', durationYears: 0, durationMonths: 0, duration: 0, weight: 0, squatting: 0, burden: determineBurdenLevel(0,0),
         evidence: { health: false, employ: false, income: false, etc: false },
         auxiliary: { stairs: false, twisting: false, startStop: false, narrow: false, impact: false, jump: false }
     };
@@ -290,8 +336,7 @@ export default function App() {
     const file = e.target.files[0];
     if (!file) return;
     
-    // [중요] 오프라인 배포 시: window.XLSX 대신 XLSX_LIB 사용
-    const XL = window.XLSX; // 오프라인 시: const XL = XLSX_LIB; 
+    const XL = window.XLSX; // Or import
     if (!XL) { alert("엑셀 라이브러리 로딩 중..."); return; }
 
     const reader = new FileReader();
@@ -340,12 +385,24 @@ export default function App() {
                  while (i < jsonData.length) {
                      const jobRow = jsonData[i];
                      if (!jobRow || !jobRow[0]) break;
+                     
+                     let durY = 0, durM = 0;
+                     const durStr = jobRow[3] ? String(jobRow[3]) : '';
+                     if(durStr.includes('년')) {
+                         durY = parseInt(durStr.split('년')[0]) || 0;
+                         if(durStr.includes('개월')) durM = parseInt(durStr.split('년')[1].replace('개월','')) || 0;
+                     } else {
+                         durY = parseFloat(durStr) || 0; 
+                     }
+
                      p.jobs.push({
                          id: Date.now() + idx + i, 
                          jobName: jobRow[0],
                          startDate: jobRow[1] || '',
                          endDate: jobRow[2] || '',
-                         duration: jobRow[3] ? String(jobRow[3]).replace(/[^0-9.]/g, '') : 0,
+                         durationYears: durY,
+                         durationMonths: durM,
+                         duration: durY + (durM/12),
                          evidence: {
                              health: jobRow[4] === 'V', employ: jobRow[5] === 'V', income: jobRow[6] === 'V', etc: jobRow[7] === 'V'
                          },
@@ -376,8 +433,7 @@ export default function App() {
   };
 
   const handleExportXLSX = () => {
-    // [중요] 오프라인 배포 시: window.XLSX 대신 XLSX_LIB 사용
-    const XL = window.XLSX; // 오프라인 시: const XL = XLSX_LIB; 
+    const XL = window.XLSX; // Or import
     if (!XL) return;
 
     const wb = XL.utils.book_new();
@@ -386,7 +442,7 @@ export default function App() {
         const wsData = [];
         const merges = [];
         
-        wsData.push(["업무관련성 특별진찰 소견서(근골격계질병 - 무릎)"]);
+        wsData.push(["업무관련성 특별진찰 소견서(근골격계질병)"]);
         merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: 7 } });
         wsData.push([]);
         
@@ -400,15 +456,17 @@ export default function App() {
         ]);
 
         const diagnosisLines = p.medicalInfo.diagnoses.map(d => {
-            const sides = d.side === 'B' ? '양측' : d.side === 'R' ? '우측' : '좌측';
-            const confirmedStr = d.side === 'B' 
-                ? `우측(${d.confirmedStatus.R === 'confirm' ? '확인' : '미확인'})/좌측(${d.confirmedStatus.L === 'confirm' ? '확인' : '미확인'})` 
-                : d.side === 'R' ? `우측(${d.confirmedStatus.R === 'confirm' ? '확인' : '미확인'})` : `좌측(${d.confirmedStatus.L === 'confirm' ? '확인' : '미확인'})`;
+            const isBilateral = BILATERAL_PARTS.includes(d.bodyPart);
             let klgInfo = "";
-            if (d.side === 'R') klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}`;
-            else if (d.side === 'L') klgInfo = `KL(좌):${getKlgText(d.klgGrade.L)}`;
-            else klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}/KL(좌):${getKlgText(d.klgGrade.L)}`;
-            return `[신청] ${d.code} ${d.name}(${sides}) -> [확인] ${confirmedStr} [${klgInfo}]`; 
+            if (!isBilateral) {
+                 klgInfo = `KL:${getKlgText(d.klgGrade.R)}`; 
+            } else {
+                 if (d.side === 'R') klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}`;
+                 else if (d.side === 'L') klgInfo = `KL(좌):${getKlgText(d.klgGrade.L)}`;
+                 else klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}/KL(좌):${getKlgText(d.klgGrade.L)}`;
+            }
+            // Side removed from header as requested
+            return formatDiagnosisName(d) + ` [${klgInfo}]`; 
         }).join("\n");
 
         wsData.push(["상병 및 의학소견", diagnosisLines]);
@@ -422,7 +480,7 @@ export default function App() {
         wsData.push(["직종", "근무시작", "근무종료", "근무기간", "건강/연금", "고용/산재", "소득금액", "기타"]);
         p.jobs.forEach(job => {
             wsData.push([
-                job.jobName, job.startDate, job.endDate, `${job.duration}년`,
+                job.jobName, job.startDate, job.endDate, `${job.durationYears}년 ${job.durationMonths}개월`,
                 job.evidence.health ? "V" : "", job.evidence.employ ? "V" : "", job.evidence.income ? "V" : "", job.evidence.etc ? "V" : ""
             ]);
         });
@@ -440,32 +498,62 @@ export default function App() {
         wsData.push(["신체부담등급", ...p.jobs.map(j => determineBurdenLevel(j.weight, j.squatting).level), ""]);
         wsData.push([]);
 
+        // --- 4. 종합 소견 ---
         wsData.push(["4. 종합 소견"]);
         merges.push({ s: { r: wsData.length-1, c: 0 }, e: { r: wsData.length-1, c: 7 } });
-        const burdenText = `${p.calculatedResult.minRelevance}% ~ ${p.calculatedResult.maxRelevance}% (평균 ${p.calculatedResult.avgRelevance.toFixed(1)}%)\n판정: ${p.calculatedResult.judgment}`;
+        
+        const isSufficient = p.calculatedResult.judgment === '충분함';
+        const burdenText = `평균 ${p.calculatedResult.avgRelevance.toFixed(1)}%\n` + 
+                           `${toCheck('충분함', isSufficient)}  ${toCheck('불충분함', !isSufficient)}`;
         wsData.push(["누적부담평가", burdenText]);
         merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
         
-        const opinionText = p.medicalInfo.diagnoses.map(d => {
-            let res = `${d.name}: `;
-            if(d.side === 'B' || d.side === 'R') res += `우측(${d.relevance.R === 'high' ? '높음' : '낮음'}) `;
-            if(d.side === 'B' || d.side === 'L') res += `좌측(${d.relevance.L === 'high' ? '높음' : '낮음'}) `;
-            let reasons = [];
-            if ((d.side === 'B' || d.side === 'R') && d.relevance.R === 'low') {
-                let reasonText = REASON_LABELS[d.relevanceReason.R];
-                if(d.relevanceReason.R === 'other' && d.relevanceReasonText?.R) reasonText += `: ${d.relevanceReasonText.R}`;
-                reasons.push(`우측사유: ${reasonText}`);
+        // Final Opinion (Split Cells)
+        // Header
+        const startRow = wsData.length;
+        
+        p.medicalInfo.diagnoses.forEach((d, i) => {
+            const isBilateral = BILATERAL_PARTS.includes(d.bodyPart);
+            let res = `▶ ${formatDiagnosisName(d)}\n`; // Side is removed from formatDiagnosisName
+            
+            const sidesToCheck = isBilateral ? (d.side === 'B' ? ['R', 'L'] : [d.side]) : ['R']; 
+
+            sidesToCheck.forEach(side => {
+                 const label = isBilateral ? (side === 'R' ? '우측' : '좌측') : "";
+                 const labelText = label ? `(${label}) ` : ""; // Only show (Right) if bilateral
+                 
+                 res += `   ${labelText}\n`;
+                 res += `      - 상병 상태: ${toCheck('확인', d.confirmedStatus[side] === 'confirm')}  ${toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}\n`;
+                 res += `      - 업무관련성 평가: ${toCheck('높음', d.relevance[side] === 'high')}  ${toCheck('낮음', d.relevance[side] === 'low')}\n`;
+                 
+                 if(d.relevance[side] === 'low') {
+                    res += `          [낮음 사유]\n`;
+                    res += `          ${toCheck('누적신체부담 부족', d.relevanceReason[side] === 'insufficient_burden')}  ${toCheck('외상 등 무관', d.relevanceReason[side] === 'unrelated')}\n`;
+                    res += `          ${toCheck('퇴행성 변화 경미', d.relevanceReason[side] === 'mild')}  ${toCheck('기간 경과', d.relevanceReason[side] === 'expired')}\n`;
+                    
+                    let otherText = d.relevanceReason[side] === 'other' ? (d.relevanceReasonText[side] ? `: ${d.relevanceReasonText[side]}` : '') : '';
+                    res += `          ${toCheck('기타 사유', d.relevanceReason[side] === 'other')}${otherText}\n`;
+                 }
+            });
+            
+            if (i === 0) {
+                 wsData.push(["업무 관련성 최종 평가", res]);
+            } else {
+                 wsData.push(["", res]); // Empty title for merge
             }
-            if ((d.side === 'B' || d.side === 'L') && d.relevance.L === 'low') {
-                let reasonText = REASON_LABELS[d.relevanceReason.L];
-                if(d.relevanceReason.L === 'other' && d.relevanceReasonText?.L) reasonText += `: ${d.relevanceReasonText.L}`;
-                reasons.push(`좌측사유: ${reasonText}`);
-            }
-            if(reasons.length > 0) res += ` [${reasons.join(', ')}]`;
-            return res;
-        }).join("\n");
-        wsData.push(["최종소견", opinionText]);
-        merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
+            // Merge B-H for this row
+            merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
+        });
+        
+        // Merge Title Column A across all diagnosis rows
+        if (p.medicalInfo.diagnoses.length > 0) {
+            merges.push({ s: { r: startRow, c: 0 }, e: { r: wsData.length - 1, c: 0 } });
+        } else {
+            // Safe fallback if no diagnoses
+            wsData.push(["업무 관련성 최종 평가", ""]);
+            merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
+        }
+
         wsData.push(["복귀 고려사항", p.assessment.returnConsideration]);
         merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
 
@@ -504,8 +592,8 @@ export default function App() {
             <div className="h-14 flex items-center justify-between">
                 <div className="flex items-center gap-2 shrink-0">
                     <Activity className="text-blue-600" size={24} />
-                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.9 (Fixed)</span></h1>
-                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.9</h1>
+                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.14 (Format Final)</span></h1>
+                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.14</h1>
                 </div>
                 
                 <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
@@ -544,6 +632,7 @@ export default function App() {
             <div className="p-6 overflow-auto flex-1 font-mono text-xs">
               <div className="bg-white border p-8 shadow-sm min-w-[800px] mx-auto">
                  <h1 className="text-xl font-bold text-center mb-6 border-b-2 border-black pb-2">업무관련성 특별진찰 소견서</h1>
+                 {/* Preview Table Implementation */}
                  <table className="w-full border-collapse border border-slate-400 mb-6">
                    <tbody>
                      <tr>
@@ -560,15 +649,16 @@ export default function App() {
                         <th className="border border-slate-400 bg-slate-100 p-2">상병 및 의학소견</th>
                         <td className="border border-slate-400 p-2" colSpan="7">
                           {activePatient.medicalInfo.diagnoses.map((d, i) => {
-                             const sides = d.side === 'B' ? '양측' : d.side === 'R' ? '우측' : '좌측';
-                             const confirmedStr = d.side === 'B' 
-                                ? `우측(${d.confirmedStatus.R === 'confirm' ? '확인' : '미확인'})/좌측(${d.confirmedStatus.L === 'confirm' ? '확인' : '미확인'})` 
-                                : d.side === 'R' ? `우측(${d.confirmedStatus.R === 'confirm' ? '확인' : '미확인'})` : `좌측(${d.confirmedStatus.L === 'confirm' ? '확인' : '미확인'})`;
+                             const isBilateral = BILATERAL_PARTS.includes(d.bodyPart);
                              let klgInfo = "";
-                             if (d.side === 'R') klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}`;
-                             else if (d.side === 'L') klgInfo = `KL(좌):${getKlgText(d.klgGrade.L)}`;
-                             else klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}/KL(좌):${getKlgText(d.klgGrade.L)}`;
-                             return <div key={i} className="mb-1 border-b border-slate-200 pb-1 last:border-0">[신청] {d.code} {d.name}({sides}) → [확인] {confirmedStr} <span className="text-blue-600 font-bold">[{klgInfo}]</span></div>
+                             if (!isBilateral) {
+                                  klgInfo = `KL:${getKlgText(d.klgGrade.R)}`; 
+                             } else {
+                                  if (d.side === 'R') klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}`;
+                                  else if (d.side === 'L') klgInfo = `KL(좌):${getKlgText(d.klgGrade.L)}`;
+                                  else klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}/KL(좌):${getKlgText(d.klgGrade.L)}`;
+                             }
+                             return <div key={i} className="mb-1 border-b border-slate-200 pb-1 last:border-0">[신청] {formatDiagnosisName(d)} <span className="text-blue-600 font-bold">[{klgInfo}]</span></div>
                           })}
                         </td>
                      </tr>
@@ -579,6 +669,7 @@ export default function App() {
                    </tbody>
                  </table>
 
+                 {/* 2. Job History */}
                  <h2 className="font-bold text-sm mb-2 border-l-4 border-blue-600 pl-2">2. 직업력 조사</h2>
                  <table className="w-full border-collapse border border-slate-400 mb-6 text-center">
                     <thead>
@@ -599,7 +690,7 @@ export default function App() {
                              <td className="border border-slate-400 p-2">{job.jobName}</td>
                              <td className="border border-slate-400 p-2">{job.startDate}</td>
                              <td className="border border-slate-400 p-2">{job.endDate}</td>
-                             <td className="border border-slate-400 p-2">{job.duration}년</td>
+                             <td className="border border-slate-400 p-2">{job.durationYears}년 {job.durationMonths}개월</td>
                              <td className="border border-slate-400 p-2">{job.evidence.health ? 'V' : ''}</td>
                              <td className="border border-slate-400 p-2">{job.evidence.employ ? 'V' : ''}</td>
                              <td className="border border-slate-400 p-2">{job.evidence.income ? 'V' : ''}</td>
@@ -609,6 +700,7 @@ export default function App() {
                     </tbody>
                  </table>
 
+                 {/* 3. Physical Burden */}
                  <h2 className="font-bold text-sm mb-2 border-l-4 border-blue-600 pl-2">3. 신체부담수준 평가</h2>
                  <table className="w-full border-collapse border border-slate-400 mb-6 text-center">
                     <thead>
@@ -647,6 +739,7 @@ export default function App() {
                     </tbody>
                  </table>
 
+                 {/* 4. Comprehensive Opinion */}
                  <h2 className="font-bold text-sm mb-2 border-l-4 border-blue-600 pl-2">4. 종합 소견</h2>
                  <table className="w-full border-collapse border border-slate-400 mb-6">
                     <tbody>
@@ -658,31 +751,50 @@ export default function App() {
                              <span className="font-bold">판정: {activePatient.calculatedResult.judgment}</span>
                           </td>
                        </tr>
-                       <tr>
-                          <th className="border border-slate-400 bg-slate-100 p-2">최종소견</th>
-                          <td className="border border-slate-400 p-2">
-                             {activePatient.medicalInfo.diagnoses.map((d, i) => {
-                                let res = `${d.name}: `;
-                                if(d.side === 'B' || d.side === 'R') res += `우측(${d.relevance.R === 'high' ? '높음' : '낮음'}) `;
-                                if(d.side === 'B' || d.side === 'L') res += `좌측(${d.relevance.L === 'high' ? '높음' : '낮음'}) `;
-                                
-                                let reasons = [];
-                                if ((d.side === 'B' || d.side === 'R') && d.relevance.R === 'low') {
-                                    let rText = REASON_LABELS[d.relevanceReason.R];
-                                    if(d.relevanceReason.R === 'other' && d.relevanceReasonText?.R) rText += `: ${d.relevanceReasonText.R}`;
-                                    reasons.push(`우측사유: ${rText}`);
-                                }
-                                if ((d.side === 'B' || d.side === 'L') && d.relevance.L === 'low') {
-                                    let rText = REASON_LABELS[d.relevanceReason.L];
-                                    if(d.relevanceReason.L === 'other' && d.relevanceReasonText?.L) rText += `: ${d.relevanceReasonText.L}`;
-                                    reasons.push(`좌측사유: ${rText}`);
-                                }
-                                if(reasons.length > 0) res += ` [${reasons.join(', ')}]`;
+                       
+                       {/* Final Assessment Split Row Rendering for Preview */}
+                       {activePatient.medicalInfo.diagnoses.map((d, i) => {
+                           const isBilateral = BILATERAL_PARTS.includes(d.bodyPart);
+                           const sidesToCheck = isBilateral ? (d.side === 'B' ? ['R', 'L'] : [d.side]) : ['R'];
+                           
+                           return (
+                               <tr key={i}>
+                                   {i === 0 && (
+                                       <th rowSpan={activePatient.medicalInfo.diagnoses.length} className="border border-slate-400 bg-slate-100 p-2 align-middle">업무관련성 최종 평가</th>
+                                   )}
+                                   <td className="border border-slate-400 p-2">
+                                       <div className="font-bold mb-1">▶ {formatDiagnosisName(d)}</div>
+                                       {sidesToCheck.map(side => {
+                                            const label = isBilateral ? (side === 'R' ? '우측' : '좌측') : "";
+                                            const labelText = label ? `(${label}) ` : "";
+                                            const isLow = d.relevance[side] === 'low';
+                                            return (
+                                                <div key={side} className="ml-4 mb-2 text-xs">
+                                                    <div className="flex flex-col gap-1 mb-1">
+                                                       <div className="font-bold">{labelText}</div>
+                                                       <div>- 상병 상태: {toCheck('확인', d.confirmedStatus[side] === 'confirm')} {toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}</div>
+                                                       <div>- 업무관련성 평가: {toCheck('높음', d.relevance[side] === 'high')} {toCheck('낮음', d.relevance[side] === 'low')}</div>
+                                                    </div>
+                                                    {isLow && (
+                                                        <div className="ml-4 bg-slate-50 p-1 rounded">
+                                                            <div className="font-bold text-[10px] mb-1">[낮음 사유]</div>
+                                                            <div className="grid grid-cols-1 gap-0.5">
+                                                                <div>{toCheck('누적신체부담 부족', d.relevanceReason[side] === 'insufficient_burden')}</div>
+                                                                <div>{toCheck('외상 등 무관', d.relevanceReason[side] === 'unrelated')}</div>
+                                                                <div>{toCheck('퇴행성 변화 경미', d.relevanceReason[side] === 'mild')}</div>
+                                                                <div>{toCheck('기간 경과', d.relevanceReason[side] === 'expired')}</div>
+                                                                <div>{toCheck('기타 사유', d.relevanceReason[side] === 'other')} {d.relevanceReason[side] === 'other' && d.relevanceReasonText[side] ? `(${d.relevanceReasonText[side]})` : ''}</div>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                       })}
+                                   </td>
+                               </tr>
+                           );
+                       })}
 
-                                return <div key={i} className="mb-1 last:mb-0">{res}</div>
-                             })}
-                          </td>
-                       </tr>
                        <tr>
                           <th className="border border-slate-400 bg-slate-100 p-2">복귀 고려사항</th>
                           <td className="border border-slate-400 p-2">{activePatient.assessment.returnConsideration}</td>
@@ -691,7 +803,7 @@ export default function App() {
                  </table>
                  
                  <div className="text-center text-slate-500 mt-8 text-[10px]">
-                    * 현재 선택된 탭의 환자 정보입니다. 엑셀 저장 시에는 모든 탭의 데이터가 시트별로 저장됩니다.
+                    * 본 미리보기는 데이터 확인용이며 실제 엑셀 파일은 병합이 적용된 XLSX 파일로 저장됩니다.
                  </div>
               </div>
             </div>
@@ -747,19 +859,25 @@ export default function App() {
                             </div>
                         </div>
                     </div>
+                    {/* Auto-calc display area */}
+                    <div className="mt-4 p-3 bg-slate-100 rounded text-center text-sm text-slate-600 flex justify-around">
+                        <div>만 나이: <span className="font-bold text-slate-800">{activePatient.calculatedResult.age}세</span></div>
+                        <div>BMI: <span className="font-bold text-slate-800">{activePatient.calculatedResult.bmi}</span></div>
+                    </div>
                 </section>
 
                 <section className="bg-white p-4 md:p-5 rounded-lg shadow-sm border border-slate-200">
                     <div className="flex items-center justify-between mb-4 border-b pb-2">
                         <div className="flex items-center gap-2 text-blue-800">
                             <FileText size={20}/>
-                            <h2 className="font-bold text-lg">2. 의학 정보 (신청)</h2>
+                            <h2 className="font-bold text-lg">2. 신청 상병</h2>
                         </div>
                         <button onClick={() => {
                             const newDiag = { 
-                                id: Date.now(), code: '', name: '', side: 'R', 
+                                id: Date.now(), code: '', name: '', 
+                                bodyPart: '무릎', side: 'R', 
                                 klgGrade: { R: '0', L: '0' }, confirmedStatus: { R: 'confirm', L: 'confirm' }, relevance: { R: 'low', L: 'low' }, 
-                                relevanceReason: { R: 'unrelated', L: 'unrelated' }, relevanceReasonText: { R: '', L: '' }
+                                relevanceReason: { R: 'insufficient_burden', L: 'insufficient_burden' }, relevanceReasonText: { R: '', L: '' }
                             };
                             updateActivePatientDeep('medicalInfo', 'diagnoses', [...activePatient.medicalInfo.diagnoses, newDiag]);
                         }} className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 flex items-center gap-1">
@@ -767,7 +885,9 @@ export default function App() {
                         </button>
                     </div>
                     <div className="space-y-4">
-                        {activePatient.medicalInfo.diagnoses.map((diag, idx) => (
+                        {activePatient.medicalInfo.diagnoses.map((diag, idx) => {
+                            const isBilateral = BILATERAL_PARTS.includes(diag.bodyPart);
+                            return (
                             <div key={diag.id} className="p-3 bg-blue-50 rounded border border-blue-100 relative">
                                 <div className="flex justify-between items-center mb-2">
                                     <h3 className="text-sm font-bold text-blue-900">신청 상병 #{idx + 1}</h3>
@@ -789,20 +909,43 @@ export default function App() {
                                             updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
                                         }}/>
                                 </div>
-                                <div className="flex gap-4 text-sm bg-white p-2 rounded border border-blue-100">
-                                    <span className="text-xs font-bold text-slate-500 pt-0.5">신청 부위:</span>
-                                    {['R','L','B'].map(side => (
-                                        <label key={side} className="flex items-center gap-1 cursor-pointer">
-                                            <input type="radio" checked={diag.side === side} 
-                                                onChange={() => {
-                                                    const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, side: side } : d);
-                                                    updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
-                                                }}/> {side==='R'?'우측':side==='L'?'좌측':'양측'}
-                                        </label>
-                                    ))}
+                                <div className="flex flex-col gap-2 bg-white p-2 rounded border border-blue-100">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold text-slate-500 w-16">부위 선택:</span>
+                                        <select className="p-1 border rounded text-sm flex-1" 
+                                            value={diag.bodyPart} 
+                                            onChange={(e) => {
+                                                const newBodyPart = e.target.value;
+                                                const isNewBilateral = BILATERAL_PARTS.includes(newBodyPart);
+                                                // If switching to non-bilateral, force side to 'R' (generic slot)
+                                                const newSide = isNewBilateral ? diag.side : 'R';
+                                                
+                                                const newDiags = activePatient.medicalInfo.diagnoses.map(d => 
+                                                    d.id === diag.id ? { ...d, bodyPart: newBodyPart, side: newSide } : d
+                                                );
+                                                updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                            }}>
+                                            {BODY_PARTS.map(part => <option key={part} value={part}>{part}</option>)}
+                                        </select>
+                                    </div>
+                                    
+                                    {isBilateral && (
+                                        <div className="flex items-center gap-4 text-sm">
+                                            <span className="text-xs font-bold text-slate-500 w-16">방향:</span>
+                                            {['R','L','B'].map(side => (
+                                                <label key={side} className="flex items-center gap-1 cursor-pointer">
+                                                    <input type="radio" checked={diag.side === side} 
+                                                        onChange={() => {
+                                                            const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, side: side } : d);
+                                                            updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                                        }}/> {side==='R'?'우측':side==='L'?'좌측':'양측'}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
-                        ))}
+                        )})}
                         <div>
                             <label className="block text-sm font-medium text-slate-600 mb-1">기타 특이사항</label>
                             <textarea className="w-full p-2 border rounded text-sm h-20 resize-none" placeholder="과거력 등 입력"
@@ -824,7 +967,12 @@ export default function App() {
                             const burden = determineBurdenLevel(job.weight, job.squatting); // Display logic only
                             return (
                                 <div key={job.id} className="border border-slate-200 rounded-lg p-4 bg-slate-50 relative">
-                                    <div className="absolute top-4 right-4 text-xs font-bold px-2 py-1 rounded bg-white border shadow-sm">Job #{index + 1}</div>
+                                    <div className="flex justify-between items-start mb-3">
+                                        <div className="text-xs font-bold px-2 py-1 rounded bg-white border shadow-sm text-slate-600">Job #{index + 1}</div>
+                                        {activePatient.jobs.length > 1 && (
+                                            <button onClick={()=>removeJob(job.id)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16}/></button>
+                                        )}
+                                    </div>
                                     
                                     <div className="mb-3">
                                         <label className="block text-xs font-bold text-slate-500 mb-1">직종 Preset 선택</label>
@@ -861,13 +1009,19 @@ export default function App() {
                                         </div>
                                     </div>
 
-                                    <div className="mb-4 bg-slate-50 p-2 rounded border border-slate-100">
-                                        <label className="block text-xs font-bold text-slate-500 mb-2">근무 이력 근거자료 (체크)</label>
-                                        <div className="flex gap-3 text-xs">
-                                            <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.health} onChange={()=>handleEvidenceChange(job.id, 'health')}/> 건강/연금</label>
-                                            <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.employ} onChange={()=>handleEvidenceChange(job.id, 'employ')}/> 고용/산재</label>
-                                            <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.income} onChange={()=>handleEvidenceChange(job.id, 'income')}/> 소득금액</label>
-                                            <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.etc} onChange={()=>handleEvidenceChange(job.id, 'etc')}/> 기타</label>
+                                    {/* Duration Input Moved Here */}
+                                    <div className="mb-3 p-3 bg-blue-50 rounded border border-blue-100">
+                                        <label className="block text-xs font-bold text-blue-800 mb-1">근무 기간 (수정 가능)</label>
+                                        <div className="flex items-center gap-2 text-sm">
+                                            <input type="number" className="w-16 p-1 border rounded text-right" 
+                                                value={job.durationYears} onChange={(e)=>handleJobChange(job.id, 'durationYears', Number(e.target.value))}/>
+                                            <span>년</span>
+                                            <input type="number" className="w-16 p-1 border rounded text-right" 
+                                                value={job.durationMonths} onChange={(e)=>handleJobChange(job.id, 'durationMonths', Number(e.target.value))}/>
+                                            <span>개월</span>
+                                            <span className="text-xs text-slate-500 ml-auto">
+                                                (계산용: {job.duration.toFixed(2)}년)
+                                            </span>
                                         </div>
                                     </div>
 
@@ -898,12 +1052,19 @@ export default function App() {
                                             ))}
                                         </div>
                                     </div>
-                                    
-                                    <div className="mt-3 flex justify-between items-center text-sm border-t pt-2">
-                                        <div className="text-slate-500 text-xs">근무기간: <span className="font-bold text-slate-800">{job.duration || 0} 년</span></div>
-                                        <div className={`font-bold ${burden.color}`}>신체부담: {burden.level} ({burden.minScore}~{burden.maxScore})</div>
+
+                                    <div className="mt-4 pt-2 border-t text-sm">
+                                        <div className="mb-2 bg-slate-50 p-2 rounded border border-slate-100">
+                                            <label className="block text-xs font-bold text-slate-500 mb-2">근무 이력 근거자료 (체크)</label>
+                                            <div className="flex gap-3 text-xs">
+                                                <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.health} onChange={()=>handleEvidenceChange(job.id, 'health')}/> 건강/연금</label>
+                                                <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.employ} onChange={()=>handleEvidenceChange(job.id, 'employ')}/> 고용/산재</label>
+                                                <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.income} onChange={()=>handleEvidenceChange(job.id, 'income')}/> 소득금액</label>
+                                                <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={job.evidence.etc} onChange={()=>handleEvidenceChange(job.id, 'etc')}/> 기타</label>
+                                            </div>
+                                        </div>
+                                        <div className={`font-bold ${burden.color}`}>신체부담: {burden.level} ({burden.minScore}~{burden.maxScore}점)</div>
                                     </div>
-                                    {activePatient.jobs.length > 1 && <button onClick={()=>removeJob(job.id)} className="absolute bottom-4 right-4 text-red-400 hover:text-red-600"><Trash2 size={16}/></button>}
                                 </div>
                             );
                         })}
@@ -948,8 +1109,7 @@ export default function App() {
                                 <div className="mb-4">
                                     <div className="text-lg font-extrabold text-indigo-900 mb-3 flex items-center gap-2">
                                         <span className="bg-indigo-100 text-indigo-700 text-xs px-2 py-1 rounded-full">#{idx + 1}</span>
-                                        {diag.name || '(진단명 미입력)'} 
-                                        <span className="text-sm font-medium text-slate-500 ml-1">({diag.side === 'B' ? '양측' : diag.side === 'R' ? '우측' : '좌측'})</span>
+                                        {formatDiagnosisName(diag)}
                                     </div>
                                     <div className="bg-indigo-50 rounded-lg p-3 border border-indigo-100 flex gap-4">
                                         {['R', 'L'].map(side => (
@@ -982,7 +1142,7 @@ export default function App() {
                                                 </div>
                                                 
                                                 <div className={`bg-white p-4 rounded border shadow-sm mb-3 ${side==='R'?'border-blue-100':'border-green-100'}`}>
-                                                    <div className="text-xl font-black text-slate-800 mb-3 tracking-tight">상병 확인</div>
+                                                    <div className="text-xl font-black text-slate-800 mb-3 tracking-tight">상병 상태</div>
                                                     <div className="flex gap-4">
                                                         <label className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1.5 rounded transition-colors">
                                                             <input type="radio" 
