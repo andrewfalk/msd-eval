@@ -89,7 +89,6 @@ const calculateBMI = (heightCm, weightKg) => {
 
 const getKlgText = (val) => val === '0' ? '해당없음' : `${val}등급`;
 
-// Helper: Convert decimal years to "X년 Y개월"
 const formatDurationText = (decimalYears) => {
     if (!decimalYears || isNaN(decimalYears)) return "0년 0개월";
     const years = Math.floor(decimalYears);
@@ -98,41 +97,69 @@ const formatDurationText = (decimalYears) => {
     return `${years}년 ${months}개월`;
 };
 
-// Helper: Format Diagnosis String for UI (Detailed)
-const formatDiagnosisName = (d) => {
+const formatDiagnosisName = (d, specificSide = null) => {
     let parts = [];
     if(d.code) parts.push(d.code);
     if(d.name) parts.push(d.name);
     parts.push(d.bodyPart);
 
-    // Determine Side Text for UI
     const isBilateral = BILATERAL_PARTS.includes(d.bodyPart);
     if (isBilateral) {
         if (d.side === 'R') parts.push('우측');
         else if (d.side === 'L') parts.push('좌측');
         else if (d.side === 'B') parts.push('양측');
     }
-    
     return parts.join(' ');
 };
 
-// Helper: Format Diagnosis String for Header (Simple: Code + Name only)
 const formatDiagnosisHeaderSimple = (d) => {
     let parts = [];
     if(d.code) parts.push(d.code);
     if(d.name) parts.push(d.name);
-    // Body part and side are removed as requested for the header
     return parts.join(' ');
 };
 
-// Checkbox format helper for Excel
 const toCheck = (label, isChecked) => `[${isChecked ? 'V' : '  '}] ${label}`;
 
-// Helper to check excel boolean cells (V, O, 1, Y)
 const isCheckedCell = (val) => {
     if(!val) return false;
     const s = String(val).toUpperCase().trim();
     return s === 'V' || s === 'O' || s === '1' || s === 'Y' || s === 'TRUE';
+};
+
+// Date Normalizer: Supports YYYY-MM-DD, YYYY.MM.DD, YYYYMMDD, Excel Serial
+const normalizeDate = (val) => {
+    if (!val) return '';
+    // 1. If it's a number (Excel Serial Date)
+    if (typeof val === 'number') {
+        // Excel base date: 1900-01-01 (Serial 1)
+        // JS base date: 1970-01-01 (Unix Epoch)
+        // Difference: 25569 days. 86400s per day.
+        const date = new Date(Math.round((val - 25569) * 86400 * 1000));
+        return !isNaN(date.getTime()) ? date.toISOString().split('T')[0] : '';
+    }
+    // 2. If it's string
+    let str = String(val).trim();
+    if (str.length === 0) return '';
+    
+    // Replace . or / with -
+    str = str.replace(/[\.\/]/g, '-');
+    
+    // Check YYYYMMDD format
+    if (/^\d{8}$/.test(str)) {
+        return `${str.substring(0,4)}-${str.substring(4,6)}-${str.substring(6,8)}`;
+    }
+    
+    // Check format like 2024-5-1 and convert to 2024-05-01
+    const parts = str.split('-');
+    if (parts.length === 3) {
+        const y = parts[0];
+        const m = parts[1].padStart(2, '0');
+        const d = parts[2].padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+
+    return str; // Return as is if already correct or unrecognizable
 };
 
 // --- 3. STATE FACTORY ---
@@ -366,6 +393,9 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (evt) => {
       const data = evt.target.result;
+      // Read with raw: false to get formatted strings for dates if possible, 
+      // but numbers are safer to handle manually. Let's use default (raw: true usually) then normalize.
+      // Actually, header:1 returns raw values by default.
       const workbook = XL.read(data, { type: 'binary' });
       let newImportedPatients = [];
 
@@ -402,16 +432,17 @@ export default function App() {
                   jobName: getColIdx("직종명"),
                   jobStart: getColIdx("근무시작"),
                   jobEnd: getColIdx("근무종료"),
+                  jobDuration: getColIdx("근무기간"), // Added
                   w: getColIdx("중량물"),
                   s: getColIdx("쪼그려"),
                   
-                  // Evidence (Starts with)
+                  // Evidence
                   evHealth: getColIdx("건강"),
                   evEmploy: getColIdx("고용"),
                   evIncome: getColIdx("소득"),
                   evEtc: getColIdx("기타증빙"),
 
-                  // Aux (Starts with)
+                  // Aux
                   auxStairs: getColIdx("계단"),
                   auxTwist: getColIdx("비틀림"),
                   auxStartStop: getColIdx("출발"),
@@ -428,7 +459,8 @@ export default function App() {
                   if (!row || !row[colMap.name]) continue; // Skip empty name rows
 
                   const name = row[colMap.name];
-                  const birth = row[colMap.birth] || '';
+                  const rawBirth = row[colMap.birth] || '';
+                  const birth = normalizeDate(rawBirth); // Fix date
                   const key = `${name}_${birth}`;
 
                   if (!patientMap[key]) {
@@ -437,7 +469,7 @@ export default function App() {
                       newP.basicInfo.name = name;
                       newP.basicInfo.birthDate = birth;
                       if(colMap.gender > -1) newP.basicInfo.gender = String(row[colMap.gender]).includes('여') ? 'F' : 'M';
-                      if(colMap.injury > -1) newP.basicInfo.injuryDate = row[colMap.injury] || '';
+                      if(colMap.injury > -1) newP.basicInfo.injuryDate = normalizeDate(row[colMap.injury]); // Fix date
                       if(colMap.height > -1) newP.basicInfo.height = String(row[colMap.height]).replace(/[^0-9.]/g, '');
                       if(colMap.weight > -1) newP.basicInfo.weight = String(row[colMap.weight]).replace(/[^0-9.]/g, '');
                       
@@ -448,11 +480,10 @@ export default function App() {
 
                   const p = patientMap[key];
 
-                  // 1. Add Diagnosis if present and new
+                  // 1. Add Diagnosis
                   if (colMap.diagCode > -1 || colMap.diagName > -1) {
                       const dCode = row[colMap.diagCode] || '';
                       const dName = row[colMap.diagName] || '';
-                      // Only add if code or name exists
                       if (dCode || dName) {
                           const dPart = row[colMap.diagPart] || '무릎';
                           let dSide = 'R';
@@ -463,7 +494,6 @@ export default function App() {
                               else dSide = 'R';
                           }
 
-                          // Check duplicates
                           const exists = p.medicalInfo.diagnoses.some(d => d.code === dCode && d.name === dName && d.side === dSide);
                           if (!exists) {
                               p.medicalInfo.diagnoses.push({
@@ -484,13 +514,36 @@ export default function App() {
 
                   // 2. Add Job
                   if (colMap.jobName > -1 && row[colMap.jobName]) {
-                      const jobStart = row[colMap.jobStart] || '';
-                      const jobEnd = row[colMap.jobEnd] || '';
+                      const jobStart = normalizeDate(row[colMap.jobStart]); // Fix date
+                      const jobEnd = normalizeDate(row[colMap.jobEnd]); // Fix date
                       
-                      let durY = 0, durM = 0, totalDur = 0;
-                      if(jobStart && jobEnd) {
-                          // Simple date calc attempt (assuming YYYY-MM-DD or excel date)
-                          // For simplicity, relying on manual check if format varies
+                      let durY = 0, durM = 0;
+                      // Try to parse "Duration" column if exists
+                      if (colMap.jobDuration > -1 && row[colMap.jobDuration]) {
+                          const durVal = String(row[colMap.jobDuration]);
+                          if (durVal.includes('년')) {
+                              durY = parseInt(durVal.split('년')[0]) || 0;
+                              if (durVal.includes('개월')) {
+                                  durM = parseInt(durVal.split('년')[1].replace('개월','').trim()) || 0;
+                              }
+                          } else if (durVal.includes('개월')) {
+                               durM = parseInt(durVal.replace('개월','').trim()) || 0;
+                          } else {
+                              // Plain number usually means years or months? Let's assume years if small, months if large? 
+                              // Or stick to years if decimal.
+                              const num = parseFloat(durVal);
+                              durY = Math.floor(num);
+                              durM = Math.round((num - durY) * 12);
+                          }
+                      } else if(jobStart && jobEnd) {
+                          // Auto calc
+                          const s = new Date(jobStart), e = new Date(jobEnd);
+                          if(!isNaN(s) && !isNaN(e)) {
+                              const diff = Math.ceil(Math.abs(e-s)/(1000*60*60*24));
+                              const decY = diff/365.25;
+                              durY = Math.floor(decY);
+                              durM = Math.round((decY-durY)*12);
+                          }
                       }
 
                       p.jobs.push({
@@ -500,7 +553,7 @@ export default function App() {
                           endDate: jobEnd,
                           durationYears: durY,
                           durationMonths: durM,
-                          duration: totalDur,
+                          duration: durY + (durM/12),
                           weight: Number(row[colMap.w]) || 0,
                           squatting: Number(row[colMap.s]) || 0,
                           burden: determineBurdenLevel(Number(row[colMap.w])||0, Number(row[colMap.s])||0),
@@ -530,7 +583,6 @@ export default function App() {
 
           } else {
               // --- DOCUMENT MODE (Existing Logic) ---
-              // One Patient Per Sheet (Parsed by Keywords)
               let p = createNewPatient(Date.now() + idx, sheetName); 
               let notes = "";
               let hasData = false;
@@ -556,8 +608,8 @@ export default function App() {
                                 if (parts[1]) p.basicInfo.weight = parts[1].replace(/[^0-9.]/g, '');
                             }
                         }
-                        if (cell.includes("생년월일")) p.basicInfo.birthDate = row[cellIndex + 1] || '';
-                        if (cell.includes("재해일자")) p.basicInfo.injuryDate = row[cellIndex + 1] || '';
+                        if (cell.includes("생년월일")) p.basicInfo.birthDate = normalizeDate(row[cellIndex + 1]);
+                        if (cell.includes("재해일자")) p.basicInfo.injuryDate = normalizeDate(row[cellIndex + 1]);
                         if (cell.includes("특이사항")) notes = row[cellIndex + 1] || '';
                     }
                  });
@@ -569,20 +621,23 @@ export default function App() {
                          const jobRow = jsonData[i];
                          if (!jobRow || !jobRow[0]) break;
                          
+                         // Parse Duration from Document Mode if format "5년 8월"
                          let durY = 0, durM = 0;
                          const durStr = jobRow[3] ? String(jobRow[3]) : '';
                          if(durStr.includes('년')) {
                              durY = parseInt(durStr.split('년')[0]) || 0;
-                             if(durStr.includes('개월')) durM = parseInt(durStr.split('년')[1].replace('개월','')) || 0;
-                         } else {
-                             durY = parseFloat(durStr) || 0; 
+                             if(durStr.includes('월')) {
+                                 // Handle "5년 8월" or "5년 8개월"
+                                 const mStr = durStr.split('년')[1];
+                                 durM = parseInt(mStr.replace('개월','').replace('월','').trim()) || 0;
+                             }
                          }
 
                          p.jobs.push({
                              id: Date.now() + idx + i, 
                              jobName: jobRow[0],
-                             startDate: jobRow[1] || '',
-                             endDate: jobRow[2] || '',
+                             startDate: normalizeDate(jobRow[1]),
+                             endDate: normalizeDate(jobRow[2]),
                              durationYears: durY,
                              durationMonths: durM,
                              duration: durY + (durM/12),
@@ -642,17 +697,8 @@ export default function App() {
         ]);
 
         const diagnosisLines = p.medicalInfo.diagnoses.map(d => {
-            const isBilateral = BILATERAL_PARTS.includes(d.bodyPart);
-            let klgInfo = "";
-            if (!isBilateral) {
-                 klgInfo = `KL:${getKlgText(d.klgGrade.R)}`; 
-            } else {
-                 if (d.side === 'R') klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}`;
-                 else if (d.side === 'L') klgInfo = `KL(좌):${getKlgText(d.klgGrade.L)}`;
-                 else klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}/KL(좌):${getKlgText(d.klgGrade.L)}`;
-            }
-            // Use formatDiagnosisName (UI) because Section 1 list is usually detailed
-            return formatDiagnosisName(d) + ` [${klgInfo}]`; 
+            // Simplified Header (Code + Name only)
+            return formatDiagnosisHeaderSimple(d); 
         }).join("\n");
 
         wsData.push(["상병 및 의학소견", diagnosisLines]);
@@ -705,41 +751,31 @@ export default function App() {
 
             // Create Rows for this diagnosis
             sidesToCheck.forEach((side, sideIdx) => {
-                 // Header: Include side if bilateral (in text)
-                 const header = `▶ ${formatDiagnosisHeaderSimple(d)}`; // Simple Header (Code + Name)
+                 // Header: Simple (Code Name)
+                 const header = `▶ ${formatDiagnosisHeaderSimple(d)}`; 
 
                  let res = `\n`;
-                 // Removing side label from sub-item, using only main info
                  const label = isBilateral ? (side === 'R' ? '우측' : '좌측') : d.bodyPart;
+                 // Added per user request: Show side in sub-item text if bilateral
+                 const labelText = isBilateral ? `(${label}) ` : ""; 
                  
-                 // If bilateral, clarify side in text if needed, but per request, remove it from header
-                 // Wait, request said "remove from header", but show in sub-item?
-                 // "상병명 헤더에 우측, 좌측과 같은 방향이 같이 표시되어야 하고, 하위 평가 항목에서는 제거되어야 해."
-                 // So Header: "M17.0 Name (Right)"
-                 
-                 let finalHeader = formatDiagnosisHeaderSimple(d);
-                 // REMOVED BODY PART AND SIDE FROM HEADER PER USER REQUEST IN v2.16
-                 // "상병명 헤더에 부위, 방향 다 빼는게 좋겠네. 그냥 상병코드와 상병명만 보여주게 수정해"
-                 // formatDiagnosisHeaderSimple ONLY returns Code + Name. Perfect.
-                 
-                 const rowHeader = `▶ ${finalHeader}`;
-
-                 res += `   - 상병 상태: ${toCheck('확인', d.confirmedStatus[side] === 'confirm')}  ${toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}\n`;
-                 res += `   - 업무관련성 평가: ${toCheck('높음', d.relevance[side] === 'high')}  ${toCheck('낮음', d.relevance[side] === 'low')}\n`;
+                 res += `   ${labelText}`;
+                 res += `- 상병 상태: ${toCheck('확인', d.confirmedStatus[side] === 'confirm')}  ${toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}\n`;
+                 res += `      - 업무관련성 평가: ${toCheck('높음', d.relevance[side] === 'high')}  ${toCheck('낮음', d.relevance[side] === 'low')}\n`;
                  
                  if(d.relevance[side] === 'low') {
-                    res += `     [낮음 사유]\n`;
-                    res += `     ${toCheck('누적신체부담 부족', d.relevanceReason[side] === 'insufficient_burden')}  ${toCheck('외상 등 무관', d.relevanceReason[side] === 'unrelated')}\n`;
-                    res += `     ${toCheck('퇴행성 변화 경미', d.relevanceReason[side] === 'mild')}  ${toCheck('기간 경과', d.relevanceReason[side] === 'expired')}\n`;
+                    res += `        [낮음 사유]\n`;
+                    res += `        ${toCheck('누적신체부담 부족', d.relevanceReason[side] === 'insufficient_burden')}  ${toCheck('외상 등 무관', d.relevanceReason[side] === 'unrelated')}\n`;
+                    res += `        ${toCheck('퇴행성 변화 경미', d.relevanceReason[side] === 'mild')}  ${toCheck('기간 경과', d.relevanceReason[side] === 'expired')}\n`;
                     
                     let otherText = d.relevanceReason[side] === 'other' ? (d.relevanceReasonText[side] ? `: ${d.relevanceReasonText[side]}` : '') : '';
-                    res += `     ${toCheck('기타 사유', d.relevanceReason[side] === 'other')}${otherText}\n`;
+                    res += `        ${toCheck('기타 사유', d.relevanceReason[side] === 'other')}${otherText}\n`;
                  }
 
                  if (i === 0 && sideIdx === 0) {
-                      wsData.push(["업무 관련성 최종 평가", rowHeader + res]);
+                      wsData.push(["업무 관련성 최종 평가", header + res]);
                  } else {
-                      wsData.push(["", rowHeader + res]); // Empty title for merge
+                      wsData.push(["", header + res]); // Empty title for merge
                  }
                  // Merge B-H for this row
                  merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
@@ -793,8 +829,8 @@ export default function App() {
             <div className="h-14 flex items-center justify-between">
                 <div className="flex items-center gap-2 shrink-0">
                     <Activity className="text-blue-600" size={24} />
-                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.17 (Smart Import)</span></h1>
-                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.17</h1>
+                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.18 (Date/Dur Fix)</span></h1>
+                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.18</h1>
                 </div>
                 
                 <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
@@ -850,16 +886,9 @@ export default function App() {
                         <th className="border border-slate-400 bg-slate-100 p-2">상병 및 의학소견</th>
                         <td className="border border-slate-400 p-2" colSpan="7">
                           {activePatient.medicalInfo.diagnoses.map((d, i) => {
-                             const isBilateral = BILATERAL_PARTS.includes(d.bodyPart);
-                             let klgInfo = "";
-                             if (!isBilateral) {
-                                  klgInfo = `KL:${getKlgText(d.klgGrade.R)}`; 
-                             } else {
-                                  if (d.side === 'R') klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}`;
-                                  else if (d.side === 'L') klgInfo = `KL(좌):${getKlgText(d.klgGrade.L)}`;
-                                  else klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}/KL(좌):${getKlgText(d.klgGrade.L)}`;
-                             }
-                             return <div key={i} className="mb-1 border-b border-slate-200 pb-1 last:border-0">[신청] {formatDiagnosisName(d)} <span className="text-blue-600 font-bold">[{klgInfo}]</span></div>
+                             // Section 1 List - Usually detailed, but per request keeping simplified header logic if preferred. 
+                             // Using formatDiagnosisHeaderSimple as requested for summary.
+                             return <div key={i} className="mb-1 border-b border-slate-200 pb-1 last:border-0">[신청] {formatDiagnosisHeaderSimple(d)}</div>
                           })}
                         </td>
                      </tr>
@@ -961,13 +990,27 @@ export default function App() {
                            return (
                                <React.Fragment key={i}>
                                    {sidesToCheck.map((side, sIdx) => {
-                                        let finalHeader = formatDiagnosisHeaderSimple(d);
-                                        // Removed Body Part and Side from header per user request v2.16
-                                        // Header is now: Code + Name only.
+                                        // Header: Simple (Code Name)
+                                        const header = `▶ ${formatDiagnosisHeaderSimple(d)}`; 
 
-                                        const header = `▶ ${finalHeader}`;
-                                        const isLow = d.relevance[side] === 'low';
+                                        let res = `\n`;
+                                        const label = isBilateral ? (side === 'R' ? '우측' : '좌측') : d.bodyPart;
+                                        // Added per user request: Show side in sub-item text if bilateral
+                                        const labelText = isBilateral ? `(${label}) ` : ""; 
                                         
+                                        res += `   ${labelText}`;
+                                        res += `- 상병 상태: ${toCheck('확인', d.confirmedStatus[side] === 'confirm')}  ${toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}\n`;
+                                        res += `      - 업무관련성 평가: ${toCheck('높음', d.relevance[side] === 'high')}  ${toCheck('낮음', d.relevance[side] === 'low')}\n`;
+                                        
+                                        if(d.relevance[side] === 'low') {
+                                            res += `        [낮음 사유]\n`;
+                                            res += `        ${toCheck('누적신체부담 부족', d.relevanceReason[side] === 'insufficient_burden')}  ${toCheck('외상 등 무관', d.relevanceReason[side] === 'unrelated')}\n`;
+                                            res += `        ${toCheck('퇴행성 변화 경미', d.relevanceReason[side] === 'mild')}  ${toCheck('기간 경과', d.relevanceReason[side] === 'expired')}\n`;
+                                            
+                                            let otherText = d.relevanceReason[side] === 'other' ? (d.relevanceReasonText[side] ? `: ${d.relevanceReasonText[side]}` : '') : '';
+                                            res += `        ${toCheck('기타 사유', d.relevanceReason[side] === 'other')}${otherText}\n`;
+                                        }
+
                                         return (
                                             <tr key={`${i}-${side}`}>
                                                 {i === 0 && sIdx === 0 && (
@@ -977,10 +1020,10 @@ export default function App() {
                                                     <div className="font-bold mb-1">{header}</div>
                                                     <div className="ml-4 mb-2 text-xs">
                                                         <div className="flex flex-col gap-1 mb-1">
-                                                            <div>- 상병 상태: {toCheck('확인', d.confirmedStatus[side] === 'confirm')} {toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}</div>
-                                                            <div>- 업무관련성 평가: {toCheck('높음', d.relevance[side] === 'high')} {toCheck('낮음', d.relevance[side] === 'low')}</div>
+                                                            <div>{labelText}- 상병 상태: {toCheck('확인', d.confirmedStatus[side] === 'confirm')} {toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}</div>
+                                                            <div>{labelText}- 업무관련성 평가: {toCheck('높음', d.relevance[side] === 'high')} {toCheck('낮음', d.relevance[side] === 'low')}</div>
                                                         </div>
-                                                        {isLow && (
+                                                        {d.relevance[side] === 'low' && (
                                                             <div className="ml-4 bg-slate-50 p-1 rounded">
                                                                 <div className="font-bold text-[10px] mb-1">[낮음 사유]</div>
                                                                 <div className="grid grid-cols-1 gap-0.5">
