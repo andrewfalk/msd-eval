@@ -549,16 +549,9 @@ export default function App() {
                  // So Header: "M17.0 Name (Right)"
                  
                  let finalHeader = formatDiagnosisHeaderSimple(d);
-                 if (isBilateral) {
-                     if(side === 'R') finalHeader += ' 우측';
-                     if(side === 'L') finalHeader += ' 좌측';
-                 } else {
-                     // Single part like neck
-                     // finalHeader += ` ${d.bodyPart}`; // Removing Body Part as well? "부위와 방향 표시를 둘 다 제거해줘" -> applied to header?
-                     // Ah, "부위와 방향 표시를 둘 다 제거해줘" was the previous instruction.
-                     // Current instruction: "상병명 헤더에 우측, 좌측과 같은 방향이 같이 표시되어야 하고"
-                     // So Header: "Code Name Direction"
-                 }
+                 // REMOVED BODY PART AND SIDE FROM HEADER PER USER REQUEST IN v2.16
+                 // "상병명 헤더에 부위, 방향 다 빼는게 좋겠네. 그냥 상병코드와 상병명만 보여주게 수정해"
+                 // formatDiagnosisHeaderSimple ONLY returns Code + Name. Perfect.
                  
                  const rowHeader = `▶ ${finalHeader}`;
 
@@ -631,8 +624,8 @@ export default function App() {
             <div className="h-14 flex items-center justify-between">
                 <div className="flex items-center gap-2 shrink-0">
                     <Activity className="text-blue-600" size={24} />
-                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.15 (Header/Side Fix)</span></h1>
-                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.15</h1>
+                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.16 (Names Fixed)</span></h1>
+                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.16</h1>
                 </div>
                 
                 <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
@@ -800,10 +793,8 @@ export default function App() {
                                <React.Fragment key={i}>
                                    {sidesToCheck.map((side, sIdx) => {
                                         let finalHeader = formatDiagnosisHeaderSimple(d);
-                                        if (isBilateral) {
-                                            if(side === 'R') finalHeader += ' 우측';
-                                            if(side === 'L') finalHeader += ' 좌측';
-                                        }
+                                        // Removed Body Part and Side from header per user request v2.16
+                                        // Header is now: Code + Name only.
 
                                         const header = `▶ ${finalHeader}`;
                                         const isLow = d.relevance[side] === 'low';
