@@ -98,13 +98,30 @@ const formatDurationText = (decimalYears) => {
     return `${years}년 ${months}개월`;
 };
 
-// Helper: Format Diagnosis String: (Code) (Name) (Part) - Removed Side for Export Header
+// Helper: Format Diagnosis String for UI (Detailed)
 const formatDiagnosisName = (d) => {
     let parts = [];
-    if(d.code) parts.push(`(${d.code})`);
-    if(d.name) parts.push(`(${d.name})`);
-    parts.push(`(${d.bodyPart})`);
+    if(d.code) parts.push(d.code);
+    if(d.name) parts.push(d.name);
+    parts.push(d.bodyPart);
+
+    // Determine Side Text for UI
+    const isBilateral = BILATERAL_PARTS.includes(d.bodyPart);
+    if (isBilateral) {
+        if (d.side === 'R') parts.push('우측');
+        else if (d.side === 'L') parts.push('좌측');
+        else if (d.side === 'B') parts.push('양측');
+    }
     
+    return parts.join(' ');
+};
+
+// Helper: Format Diagnosis String for Header (Simple: Code + Name only)
+const formatDiagnosisHeaderSimple = (d) => {
+    let parts = [];
+    if(d.code) parts.push(d.code);
+    if(d.name) parts.push(d.name);
+    // Body part and side are removed as requested for the header
     return parts.join(' ');
 };
 
@@ -465,7 +482,7 @@ export default function App() {
                  else if (d.side === 'L') klgInfo = `KL(좌):${getKlgText(d.klgGrade.L)}`;
                  else klgInfo = `KL(우):${getKlgText(d.klgGrade.R)}/KL(좌):${getKlgText(d.klgGrade.L)}`;
             }
-            // Side removed from header as requested
+            // Use formatDiagnosisName (UI) because Section 1 list is usually detailed
             return formatDiagnosisName(d) + ` [${klgInfo}]`; 
         }).join("\n");
 
@@ -514,42 +531,64 @@ export default function App() {
         
         p.medicalInfo.diagnoses.forEach((d, i) => {
             const isBilateral = BILATERAL_PARTS.includes(d.bodyPart);
-            let res = `▶ ${formatDiagnosisName(d)}\n`; // Side is removed from formatDiagnosisName
             
             const sidesToCheck = isBilateral ? (d.side === 'B' ? ['R', 'L'] : [d.side]) : ['R']; 
 
-            sidesToCheck.forEach(side => {
-                 const label = isBilateral ? (side === 'R' ? '우측' : '좌측') : "";
-                 const labelText = label ? `(${label}) ` : ""; // Only show (Right) if bilateral
+            // Create Rows for this diagnosis
+            sidesToCheck.forEach((side, sideIdx) => {
+                 // Header: Include side if bilateral (in text)
+                 const header = `▶ ${formatDiagnosisHeaderSimple(d)}`; // Simple Header (Code + Name)
+
+                 let res = `\n`;
+                 // Removing side label from sub-item, using only main info
+                 const label = isBilateral ? (side === 'R' ? '우측' : '좌측') : d.bodyPart;
                  
-                 res += `   ${labelText}\n`;
-                 res += `      - 상병 상태: ${toCheck('확인', d.confirmedStatus[side] === 'confirm')}  ${toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}\n`;
-                 res += `      - 업무관련성 평가: ${toCheck('높음', d.relevance[side] === 'high')}  ${toCheck('낮음', d.relevance[side] === 'low')}\n`;
+                 // If bilateral, clarify side in text if needed, but per request, remove it from header
+                 // Wait, request said "remove from header", but show in sub-item?
+                 // "상병명 헤더에 우측, 좌측과 같은 방향이 같이 표시되어야 하고, 하위 평가 항목에서는 제거되어야 해."
+                 // So Header: "M17.0 Name (Right)"
+                 
+                 let finalHeader = formatDiagnosisHeaderSimple(d);
+                 if (isBilateral) {
+                     if(side === 'R') finalHeader += ' 우측';
+                     if(side === 'L') finalHeader += ' 좌측';
+                 } else {
+                     // Single part like neck
+                     // finalHeader += ` ${d.bodyPart}`; // Removing Body Part as well? "부위와 방향 표시를 둘 다 제거해줘" -> applied to header?
+                     // Ah, "부위와 방향 표시를 둘 다 제거해줘" was the previous instruction.
+                     // Current instruction: "상병명 헤더에 우측, 좌측과 같은 방향이 같이 표시되어야 하고"
+                     // So Header: "Code Name Direction"
+                 }
+                 
+                 const rowHeader = `▶ ${finalHeader}`;
+
+                 res += `   - 상병 상태: ${toCheck('확인', d.confirmedStatus[side] === 'confirm')}  ${toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}\n`;
+                 res += `   - 업무관련성 평가: ${toCheck('높음', d.relevance[side] === 'high')}  ${toCheck('낮음', d.relevance[side] === 'low')}\n`;
                  
                  if(d.relevance[side] === 'low') {
-                    res += `          [낮음 사유]\n`;
-                    res += `          ${toCheck('누적신체부담 부족', d.relevanceReason[side] === 'insufficient_burden')}  ${toCheck('외상 등 무관', d.relevanceReason[side] === 'unrelated')}\n`;
-                    res += `          ${toCheck('퇴행성 변화 경미', d.relevanceReason[side] === 'mild')}  ${toCheck('기간 경과', d.relevanceReason[side] === 'expired')}\n`;
+                    res += `     [낮음 사유]\n`;
+                    res += `     ${toCheck('누적신체부담 부족', d.relevanceReason[side] === 'insufficient_burden')}  ${toCheck('외상 등 무관', d.relevanceReason[side] === 'unrelated')}\n`;
+                    res += `     ${toCheck('퇴행성 변화 경미', d.relevanceReason[side] === 'mild')}  ${toCheck('기간 경과', d.relevanceReason[side] === 'expired')}\n`;
                     
                     let otherText = d.relevanceReason[side] === 'other' ? (d.relevanceReasonText[side] ? `: ${d.relevanceReasonText[side]}` : '') : '';
-                    res += `          ${toCheck('기타 사유', d.relevanceReason[side] === 'other')}${otherText}\n`;
+                    res += `     ${toCheck('기타 사유', d.relevanceReason[side] === 'other')}${otherText}\n`;
                  }
+
+                 if (i === 0 && sideIdx === 0) {
+                      wsData.push(["업무 관련성 최종 평가", rowHeader + res]);
+                 } else {
+                      wsData.push(["", rowHeader + res]); // Empty title for merge
+                 }
+                 // Merge B-H for this row
+                 merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
             });
-            
-            if (i === 0) {
-                 wsData.push(["업무 관련성 최종 평가", res]);
-            } else {
-                 wsData.push(["", res]); // Empty title for merge
-            }
-            // Merge B-H for this row
-            merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
         });
         
         // Merge Title Column A across all diagnosis rows
         if (p.medicalInfo.diagnoses.length > 0) {
             merges.push({ s: { r: startRow, c: 0 }, e: { r: wsData.length - 1, c: 0 } });
         } else {
-            // Safe fallback if no diagnoses
+            // Safe fallback
             wsData.push(["업무 관련성 최종 평가", ""]);
             merges.push({ s: { r: wsData.length-1, c: 1 }, e: { r: wsData.length-1, c: 7 } });
         }
@@ -592,8 +631,8 @@ export default function App() {
             <div className="h-14 flex items-center justify-between">
                 <div className="flex items-center gap-2 shrink-0">
                     <Activity className="text-blue-600" size={24} />
-                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.14 (Format Final)</span></h1>
-                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.14</h1>
+                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.15 (Header/Side Fix)</span></h1>
+                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.15</h1>
                 </div>
                 
                 <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
@@ -758,40 +797,47 @@ export default function App() {
                            const sidesToCheck = isBilateral ? (d.side === 'B' ? ['R', 'L'] : [d.side]) : ['R'];
                            
                            return (
-                               <tr key={i}>
-                                   {i === 0 && (
-                                       <th rowSpan={activePatient.medicalInfo.diagnoses.length} className="border border-slate-400 bg-slate-100 p-2 align-middle">업무관련성 최종 평가</th>
-                                   )}
-                                   <td className="border border-slate-400 p-2">
-                                       <div className="font-bold mb-1">▶ {formatDiagnosisName(d)}</div>
-                                       {sidesToCheck.map(side => {
-                                            const label = isBilateral ? (side === 'R' ? '우측' : '좌측') : "";
-                                            const labelText = label ? `(${label}) ` : "";
-                                            const isLow = d.relevance[side] === 'low';
-                                            return (
-                                                <div key={side} className="ml-4 mb-2 text-xs">
-                                                    <div className="flex flex-col gap-1 mb-1">
-                                                       <div className="font-bold">{labelText}</div>
-                                                       <div>- 상병 상태: {toCheck('확인', d.confirmedStatus[side] === 'confirm')} {toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}</div>
-                                                       <div>- 업무관련성 평가: {toCheck('높음', d.relevance[side] === 'high')} {toCheck('낮음', d.relevance[side] === 'low')}</div>
-                                                    </div>
-                                                    {isLow && (
-                                                        <div className="ml-4 bg-slate-50 p-1 rounded">
-                                                            <div className="font-bold text-[10px] mb-1">[낮음 사유]</div>
-                                                            <div className="grid grid-cols-1 gap-0.5">
-                                                                <div>{toCheck('누적신체부담 부족', d.relevanceReason[side] === 'insufficient_burden')}</div>
-                                                                <div>{toCheck('외상 등 무관', d.relevanceReason[side] === 'unrelated')}</div>
-                                                                <div>{toCheck('퇴행성 변화 경미', d.relevanceReason[side] === 'mild')}</div>
-                                                                <div>{toCheck('기간 경과', d.relevanceReason[side] === 'expired')}</div>
-                                                                <div>{toCheck('기타 사유', d.relevanceReason[side] === 'other')} {d.relevanceReason[side] === 'other' && d.relevanceReasonText[side] ? `(${d.relevanceReasonText[side]})` : ''}</div>
-                                                            </div>
+                               <React.Fragment key={i}>
+                                   {sidesToCheck.map((side, sIdx) => {
+                                        let finalHeader = formatDiagnosisHeaderSimple(d);
+                                        if (isBilateral) {
+                                            if(side === 'R') finalHeader += ' 우측';
+                                            if(side === 'L') finalHeader += ' 좌측';
+                                        }
+
+                                        const header = `▶ ${finalHeader}`;
+                                        const isLow = d.relevance[side] === 'low';
+                                        
+                                        return (
+                                            <tr key={`${i}-${side}`}>
+                                                {i === 0 && sIdx === 0 && (
+                                                    <th rowSpan={activePatient.medicalInfo.diagnoses.reduce((acc, curr) => acc + (BILATERAL_PARTS.includes(curr.bodyPart) && curr.side === 'B' ? 2 : 1), 0)} className="border border-slate-400 bg-slate-100 p-2 align-middle">업무관련성 최종 평가</th>
+                                                )}
+                                                <td className="border border-slate-400 p-2">
+                                                    <div className="font-bold mb-1">{header}</div>
+                                                    <div className="ml-4 mb-2 text-xs">
+                                                        <div className="flex flex-col gap-1 mb-1">
+                                                            <div>- 상병 상태: {toCheck('확인', d.confirmedStatus[side] === 'confirm')} {toCheck('미확인', d.confirmedStatus[side] !== 'confirm')}</div>
+                                                            <div>- 업무관련성 평가: {toCheck('높음', d.relevance[side] === 'high')} {toCheck('낮음', d.relevance[side] === 'low')}</div>
                                                         </div>
-                                                    )}
-                                                </div>
-                                            );
-                                       })}
-                                   </td>
-                               </tr>
+                                                        {isLow && (
+                                                            <div className="ml-4 bg-slate-50 p-1 rounded">
+                                                                <div className="font-bold text-[10px] mb-1">[낮음 사유]</div>
+                                                                <div className="grid grid-cols-1 gap-0.5">
+                                                                    <div>{toCheck('누적신체부담 부족', d.relevanceReason[side] === 'insufficient_burden')}</div>
+                                                                    <div>{toCheck('외상 등 무관', d.relevanceReason[side] === 'unrelated')}</div>
+                                                                    <div>{toCheck('퇴행성 변화 경미', d.relevanceReason[side] === 'mild')}</div>
+                                                                    <div>{toCheck('기간 경과', d.relevanceReason[side] === 'expired')}</div>
+                                                                    <div>{toCheck('기타 사유', d.relevanceReason[side] === 'other')} {d.relevanceReason[side] === 'other' && d.relevanceReasonText[side] ? `(${d.relevanceReasonText[side]})` : ''}</div>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                   })}
+                               </React.Fragment>
                            );
                        })}
 
@@ -1104,7 +1150,13 @@ export default function App() {
                             <span className="text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded ml-auto font-normal">전문의 판단</span>
                         </h4>
                         
-                        {activePatient.medicalInfo.diagnoses.map((diag, idx) => (
+                        {activePatient.medicalInfo.diagnoses.map((diag, idx) => {
+                            const isBilateral = BILATERAL_PARTS.includes(diag.bodyPart);
+                            const sidesToRender = isBilateral 
+                                ? (diag.side === 'B' ? ['R', 'L'] : [diag.side]) 
+                                : ['R']; // Use R slot for single body parts like Neck/Waist
+
+                            return (
                             <div key={diag.id} className="border-2 border-slate-200 rounded-xl p-5 bg-white shadow-sm hover:border-blue-300 transition-colors">
                                 <div className="mb-4">
                                     <div className="text-lg font-extrabold text-indigo-900 mb-3 flex items-center gap-2">
@@ -1112,115 +1164,116 @@ export default function App() {
                                         {formatDiagnosisName(diag)}
                                     </div>
                                     <div className="bg-indigo-50 rounded-lg p-3 border border-indigo-100 flex gap-4">
-                                        {['R', 'L'].map(side => (
-                                            (diag.side === side || diag.side === 'B') && (
-                                                <div key={side} className="flex-1">
-                                                    <label className="block text-xs font-bold text-indigo-800 mb-1">{side==='R'?'우측':'좌측'} KL grade</label>
-                                                    <select className="w-full p-2 border rounded text-sm font-bold bg-white text-indigo-900 outline-none focus:ring-2 focus:ring-indigo-400"
-                                                        value={diag.klgGrade[side]} 
-                                                        onChange={(e)=> {
-                                                            const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, klgGrade: { ...d.klgGrade, [side]: e.target.value } } : d);
-                                                            updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
-                                                        }}>
-                                                        <option value="0">해당없음 (Grade 0)</option>
-                                                        <option value="1">Grade 1</option>
-                                                        <option value="2">Grade 2</option>
-                                                        <option value="3">Grade 3</option>
-                                                        <option value="4">Grade 4</option>
-                                                    </select>
-                                                </div>
-                                            )
+                                        {/* Dynamic KLG */}
+                                        {sidesToRender.map(side => (
+                                            <div key={side} className="flex-1">
+                                                <label className="block text-xs font-bold text-indigo-800 mb-1">
+                                                    {isBilateral ? (side==='R'?'우측':'좌측') : diag.bodyPart} KL grade
+                                                </label>
+                                                <select className="w-full p-2 border rounded text-sm font-bold bg-white text-indigo-900 outline-none focus:ring-2 focus:ring-indigo-400"
+                                                    value={diag.klgGrade[side]} 
+                                                    onChange={(e)=> {
+                                                        const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, klgGrade: { ...d.klgGrade, [side]: e.target.value } } : d);
+                                                        updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                                    }}>
+                                                    <option value="0">해당없음 (Grade 0)</option>
+                                                    <option value="1">Grade 1</option>
+                                                    <option value="2">Grade 2</option>
+                                                    <option value="3">Grade 3</option>
+                                                    <option value="4">Grade 4</option>
+                                                </select>
+                                            </div>
                                         ))}
                                     </div>
                                 </div>
                                 <div className="space-y-4">
-                                    {['R', 'L'].map(side => (
-                                        (diag.side === side || diag.side === 'B') && (
-                                            <div key={side} className={`p-4 rounded border ${side==='R' ? 'bg-blue-50 border-blue-200' : 'bg-green-50 border-green-200'}`}>
-                                                <div className="flex items-center justify-between mb-3">
-                                                    <span className={`text-sm font-extrabold ${side==='R'?'text-blue-900':'text-green-900'}`}>{side==='R'?'우측 (Right)':'좌측 (Left)'}</span>
-                                                </div>
-                                                
-                                                <div className={`bg-white p-4 rounded border shadow-sm mb-3 ${side==='R'?'border-blue-100':'border-green-100'}`}>
-                                                    <div className="text-xl font-black text-slate-800 mb-3 tracking-tight">상병 상태</div>
-                                                    <div className="flex gap-4">
-                                                        <label className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1.5 rounded transition-colors">
-                                                            <input type="radio" 
-                                                                checked={diag.confirmedStatus[side] === 'confirm'} 
-                                                                onChange={() => {
-                                                                    const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, confirmedStatus: { ...d.confirmedStatus, [side]: 'confirm' } } : d);
-                                                                    updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
-                                                                }}
-                                                                className={`w-5 h-5 ${side==='R'?'accent-blue-600':'accent-green-600'}`}/>
-                                                            <span className={`text-base font-bold ${side==='R'?'text-blue-700':'text-green-700'}`}>확인</span>
-                                                        </label>
-                                                        <label className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1.5 rounded transition-colors">
-                                                            <input type="radio" 
-                                                                checked={diag.confirmedStatus[side] !== 'confirm'} 
-                                                                onChange={() => {
-                                                                    const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, confirmedStatus: { ...d.confirmedStatus, [side]: 'none' } } : d);
-                                                                    updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
-                                                                }}
-                                                                className="accent-slate-500 w-5 h-5"/>
-                                                            <span className="text-base font-medium text-slate-600">미확인</span>
-                                                        </label>
-                                                    </div>
-                                                </div>
-
-                                                <div className={`bg-white p-4 rounded border shadow-sm ${side==='R'?'border-blue-100':'border-green-100'}`}>
-                                                    <div className="text-xl font-black text-slate-800 mb-3 tracking-tight">업무관련성 평가</div>
-                                                    <div className="flex gap-4">
-                                                        <label className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1.5 rounded transition-colors">
-                                                            <input type="radio" checked={diag.relevance[side] === 'high'} 
-                                                                onChange={() => {
-                                                                    const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, relevance: { ...d.relevance, [side]: 'high' } } : d);
-                                                                    updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
-                                                                }} className={`w-5 h-5 ${side==='R'?'accent-blue-600':'accent-green-600'}`}/> 
-                                                            <span className={`text-base font-bold ${side==='R'?'text-blue-700':'text-green-700'}`}>높음</span>
-                                                        </label>
-                                                        <label className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1.5 rounded transition-colors">
-                                                            <input type="radio" checked={diag.relevance[side] === 'low'} 
-                                                                onChange={() => {
-                                                                    const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, relevance: { ...d.relevance, [side]: 'low' } } : d);
-                                                                    updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
-                                                                }} className="accent-slate-500 w-5 h-5"/> 
-                                                            <span className="text-base font-medium text-slate-600">낮음</span>
-                                                        </label>
-                                                    </div>
-                                                </div>
-
-                                                {diag.relevance[side] === 'low' && (
-                                                    <div className="mt-3 animate-fadeIn">
-                                                        <div className={`text-sm font-bold mb-1 ${side==='R'?'text-blue-800':'text-green-800'}`}>낮음 사유</div>
-                                                        <select className={`w-full text-base p-2.5 border rounded bg-white outline-none text-slate-700 mb-2 ${side==='R'?'focus:ring-1 focus:ring-blue-500':'focus:ring-1 focus:ring-green-500'}`}
-                                                            value={diag.relevanceReason[side]} 
-                                                            onChange={(e) => {
-                                                                const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, relevanceReason: { ...d.relevanceReason, [side]: e.target.value } } : d);
-                                                                updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
-                                                            }}>
-                                                            {Object.entries(REASON_LABELS).map(([key, label]) => (
-                                                                <option key={key} value={key}>{label}</option>
-                                                            ))}
-                                                        </select>
-                                                        {diag.relevanceReason[side] === 'other' && (
-                                                            <input type="text" className="w-full p-2 mt-2 border rounded text-sm focus:ring-1 focus:ring-slate-400 outline-none"
-                                                                placeholder="상세 사유를 입력하세요"
-                                                                value={diag.relevanceReasonText?.[side] || ''}
-                                                                onChange={(e) => {
-                                                                    const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { 
-                                                                        ...d, relevanceReasonText: { ...d.relevanceReasonText, [side]: e.target.value } 
-                                                                    } : d);
-                                                                    updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
-                                                                }}/>
-                                                        )}
-                                                    </div>
-                                                )}
+                                    {sidesToRender.map(side => (
+                                        <div key={side} className={`p-4 rounded border ${side==='R' ? 'bg-blue-50 border-blue-200' : 'bg-green-50 border-green-200'}`}>
+                                            <div className="flex items-center justify-between mb-3">
+                                                <span className={`text-sm font-extrabold ${side==='R'?'text-blue-900':'text-green-900'}`}>
+                                                    {isBilateral ? (side==='R'?'우측 (Right)':'좌측 (Left)') : diag.bodyPart}
+                                                </span>
                                             </div>
-                                        )
+                                            
+                                            <div className={`bg-white p-4 rounded border shadow-sm mb-3 ${side==='R'?'border-blue-100':'border-green-100'}`}>
+                                                <div className="text-xl font-black text-slate-800 mb-3 tracking-tight">상병 상태</div>
+                                                <div className="flex gap-4">
+                                                    <label className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1.5 rounded transition-colors">
+                                                        <input type="radio" 
+                                                            checked={diag.confirmedStatus[side] === 'confirm'} 
+                                                            onChange={() => {
+                                                                const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, confirmedStatus: { ...d.confirmedStatus, [side]: 'confirm' } } : d);
+                                                                updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                                            }}
+                                                            className={`w-5 h-5 ${side==='R'?'accent-blue-600':'accent-green-600'}`}/>
+                                                        <span className={`text-base font-bold ${side==='R'?'text-blue-700':'text-green-700'}`}>확인</span>
+                                                    </label>
+                                                    <label className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1.5 rounded transition-colors">
+                                                        <input type="radio" 
+                                                            checked={diag.confirmedStatus[side] !== 'confirm'} 
+                                                            onChange={() => {
+                                                                const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, confirmedStatus: { ...d.confirmedStatus, [side]: 'none' } } : d);
+                                                                updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                                            }}
+                                                            className="accent-slate-500 w-5 h-5"/>
+                                                        <span className="text-base font-medium text-slate-600">미확인</span>
+                                                    </label>
+                                                </div>
+                                            </div>
+
+                                            <div className={`bg-white p-4 rounded border shadow-sm ${side==='R'?'border-blue-100':'border-green-100'}`}>
+                                                <div className="text-xl font-black text-slate-800 mb-3 tracking-tight">업무관련성 평가</div>
+                                                <div className="flex gap-4">
+                                                    <label className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1.5 rounded transition-colors">
+                                                        <input type="radio" checked={diag.relevance[side] === 'high'} 
+                                                            onChange={() => {
+                                                                const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, relevance: { ...d.relevance, [side]: 'high' } } : d);
+                                                                updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                                            }} className={`w-5 h-5 ${side==='R'?'accent-blue-600':'accent-green-600'}`}/> 
+                                                        <span className={`text-base font-bold ${side==='R'?'text-blue-700':'text-green-700'}`}>높음</span>
+                                                    </label>
+                                                    <label className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1.5 rounded transition-colors">
+                                                        <input type="radio" checked={diag.relevance[side] === 'low'} 
+                                                            onChange={() => {
+                                                                const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, relevance: { ...d.relevance, [side]: 'low' } } : d);
+                                                                updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                                            }} className="accent-slate-500 w-5 h-5"/> 
+                                                        <span className="text-base font-medium text-slate-600">낮음</span>
+                                                    </label>
+                                                </div>
+                                            </div>
+
+                                            {diag.relevance[side] === 'low' && (
+                                                <div className="mt-3 animate-fadeIn">
+                                                    <div className={`text-sm font-bold mb-1 ${side==='R'?'text-blue-800':'text-green-800'}`}>낮음 사유</div>
+                                                    <select className={`w-full text-base p-2.5 border rounded bg-white outline-none text-slate-700 mb-2 ${side==='R'?'focus:ring-1 focus:ring-blue-500':'focus:ring-1 focus:ring-green-500'}`}
+                                                        value={diag.relevanceReason[side]} 
+                                                        onChange={(e) => {
+                                                            const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { ...d, relevanceReason: { ...d.relevanceReason, [side]: e.target.value } } : d);
+                                                            updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                                        }}>
+                                                        {Object.entries(REASON_LABELS).map(([key, label]) => (
+                                                            <option key={key} value={key}>{label}</option>
+                                                        ))}
+                                                    </select>
+                                                    {diag.relevanceReason[side] === 'other' && (
+                                                        <input type="text" className="w-full p-2 mt-2 border rounded text-sm focus:ring-1 focus:ring-slate-400 outline-none"
+                                                            placeholder="상세 사유를 입력하세요"
+                                                            value={diag.relevanceReasonText?.[side] || ''}
+                                                            onChange={(e) => {
+                                                                const newDiags = activePatient.medicalInfo.diagnoses.map(d => d.id === diag.id ? { 
+                                                                    ...d, relevanceReasonText: { ...d.relevanceReasonText, [side]: e.target.value } 
+                                                                    } : d);
+                                                                updateActivePatientDeep('medicalInfo', 'diagnoses', newDiags);
+                                                            }}/>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
                                     ))}
                                 </div>
                             </div>
-                        ))}
+                        )})}
 
                         <div className="mt-4 pt-4 border-t">
                             <label className="block text-xs font-bold mb-2 text-slate-600">복귀 관련 고려사항</label>
