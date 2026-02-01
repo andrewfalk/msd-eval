@@ -128,6 +128,13 @@ const formatDiagnosisHeaderSimple = (d) => {
 // Checkbox format helper for Excel
 const toCheck = (label, isChecked) => `[${isChecked ? 'V' : '  '}] ${label}`;
 
+// Helper to check excel boolean cells (V, O, 1, Y)
+const isCheckedCell = (val) => {
+    if(!val) return false;
+    const s = String(val).toUpperCase().trim();
+    return s === 'V' || s === 'O' || s === '1' || s === 'Y' || s === 'TRUE';
+};
+
 // --- 3. STATE FACTORY ---
 const createNewPatient = (id = Date.now(), name = '새 환자') => ({
   id,
@@ -360,80 +367,242 @@ export default function App() {
     reader.onload = (evt) => {
       const data = evt.target.result;
       const workbook = XL.read(data, { type: 'binary' });
-      const newImportedPatients = [];
+      let newImportedPatients = [];
 
+      // Loop through ALL sheets
       workbook.SheetNames.forEach((sheetName, idx) => {
           const worksheet = workbook.Sheets[sheetName];
           const jsonData = XL.utils.sheet_to_json(worksheet, { header: 1 });
           if(!jsonData || jsonData.length === 0) return;
 
-          let p = createNewPatient(Date.now() + idx, sheetName); 
-          let notes = "";
+          // Detect Format: Row 1 contains Header like "성명"? -> List Mode
+          const firstRowStr = JSON.stringify(jsonData[0]);
+          const isListMode = firstRowStr.includes("성명") && firstRowStr.includes("직종명"); // Basic heuristics
 
-          jsonData.forEach((row, rowIndex) => {
-             if (!row || row.length === 0) return;
-             row.forEach((cell, cellIndex) => {
-                if (typeof cell === 'string') {
-                    if (cell.includes("이름/성별")) {
-                        const val = row[cellIndex + 1];
-                        if (val && typeof val === 'string') {
-                            const parts = val.split('(');
-                            if (parts[0]) p.basicInfo.name = parts[0].trim();
-                            if (parts[1]) p.basicInfo.gender = parts[1].includes('남') ? 'M' : 'F';
-                        }
-                    }
-                    if (cell.includes("키/몸무게")) {
-                        const val = row[cellIndex + 1];
-                        if (val && typeof val === 'string') {
-                            const parts = val.split('/');
-                            if (parts[0]) p.basicInfo.height = parts[0].replace(/[^0-9.]/g, '');
-                            if (parts[1]) p.basicInfo.weight = parts[1].replace(/[^0-9.]/g, '');
-                        }
-                    }
-                    if (cell.includes("생년월일")) p.basicInfo.birthDate = row[cellIndex + 1] || '';
-                    if (cell.includes("재해일자")) p.basicInfo.injuryDate = row[cellIndex + 1] || '';
-                    if (cell.includes("특이사항")) notes = row[cellIndex + 1] || '';
-                }
-             });
+          if (isListMode) {
+              // --- LIST MODE (Smart Grouping) ---
+              const headers = jsonData[0];
+              const getColIdx = (key) => headers.findIndex(h => h && h.toString().trim().includes(key));
+              
+              const colMap = {
+                  name: getColIdx("성명"),
+                  gender: getColIdx("성별"),
+                  birth: getColIdx("생년월일"),
+                  injury: getColIdx("재해일자"),
+                  height: getColIdx("신장"),
+                  weight: getColIdx("체중"),
+                  
+                  // Diagnoses
+                  diagCode: getColIdx("상병코드"),
+                  diagName: getColIdx("상병명"),
+                  diagPart: getColIdx("부위"),
+                  diagSide: getColIdx("방향"),
 
-             if (row.includes("직종") && row.includes("근무시작")) {
-                 p.jobs = []; 
-                 let i = rowIndex + 1;
-                 while (i < jsonData.length) {
-                     const jobRow = jsonData[i];
-                     if (!jobRow || !jobRow[0]) break;
-                     
-                     let durY = 0, durM = 0;
-                     const durStr = jobRow[3] ? String(jobRow[3]) : '';
-                     if(durStr.includes('년')) {
-                         durY = parseInt(durStr.split('년')[0]) || 0;
-                         if(durStr.includes('개월')) durM = parseInt(durStr.split('년')[1].replace('개월','')) || 0;
-                     } else {
-                         durY = parseFloat(durStr) || 0; 
+                  // Job
+                  jobName: getColIdx("직종명"),
+                  jobStart: getColIdx("근무시작"),
+                  jobEnd: getColIdx("근무종료"),
+                  w: getColIdx("중량물"),
+                  s: getColIdx("쪼그려"),
+                  
+                  // Evidence (Starts with)
+                  evHealth: getColIdx("건강"),
+                  evEmploy: getColIdx("고용"),
+                  evIncome: getColIdx("소득"),
+                  evEtc: getColIdx("기타증빙"),
+
+                  // Aux (Starts with)
+                  auxStairs: getColIdx("계단"),
+                  auxTwist: getColIdx("비틀림"),
+                  auxStartStop: getColIdx("출발"),
+                  auxNarrow: getColIdx("좁은"),
+                  auxImpact: getColIdx("충격"),
+                  auxJump: getColIdx("뛰어")
+              };
+
+              // Group rows by "Name + BirthDate"
+              const patientMap = {};
+
+              for (let i = 1; i < jsonData.length; i++) {
+                  const row = jsonData[i];
+                  if (!row || !row[colMap.name]) continue; // Skip empty name rows
+
+                  const name = row[colMap.name];
+                  const birth = row[colMap.birth] || '';
+                  const key = `${name}_${birth}`;
+
+                  if (!patientMap[key]) {
+                      // New Patient
+                      const newP = createNewPatient(Date.now() + i, name);
+                      newP.basicInfo.name = name;
+                      newP.basicInfo.birthDate = birth;
+                      if(colMap.gender > -1) newP.basicInfo.gender = String(row[colMap.gender]).includes('여') ? 'F' : 'M';
+                      if(colMap.injury > -1) newP.basicInfo.injuryDate = row[colMap.injury] || '';
+                      if(colMap.height > -1) newP.basicInfo.height = String(row[colMap.height]).replace(/[^0-9.]/g, '');
+                      if(colMap.weight > -1) newP.basicInfo.weight = String(row[colMap.weight]).replace(/[^0-9.]/g, '');
+                      
+                      newP.jobs = []; // Clear default job
+                      newP.medicalInfo.diagnoses = []; // Clear default diagnosis
+                      patientMap[key] = newP;
+                  }
+
+                  const p = patientMap[key];
+
+                  // 1. Add Diagnosis if present and new
+                  if (colMap.diagCode > -1 || colMap.diagName > -1) {
+                      const dCode = row[colMap.diagCode] || '';
+                      const dName = row[colMap.diagName] || '';
+                      // Only add if code or name exists
+                      if (dCode || dName) {
+                          const dPart = row[colMap.diagPart] || '무릎';
+                          let dSide = 'R';
+                          if (row[colMap.diagSide]) {
+                              const sStr = String(row[colMap.diagSide]);
+                              if (sStr.includes('좌')) dSide = 'L';
+                              else if (sStr.includes('양')) dSide = 'B';
+                              else dSide = 'R';
+                          }
+
+                          // Check duplicates
+                          const exists = p.medicalInfo.diagnoses.some(d => d.code === dCode && d.name === dName && d.side === dSide);
+                          if (!exists) {
+                              p.medicalInfo.diagnoses.push({
+                                  id: Date.now() + i + 5000,
+                                  code: dCode,
+                                  name: dName,
+                                  bodyPart: dPart,
+                                  side: dSide,
+                                  klgGrade: { R: '0', L: '0' },
+                                  confirmedStatus: { R: 'confirm', L: 'confirm' },
+                                  relevance: { R: 'low', L: 'low' },
+                                  relevanceReason: { R: 'insufficient_burden', L: 'insufficient_burden' },
+                                  relevanceReasonText: { R: '', L: '' }
+                              });
+                          }
+                      }
+                  }
+
+                  // 2. Add Job
+                  if (colMap.jobName > -1 && row[colMap.jobName]) {
+                      const jobStart = row[colMap.jobStart] || '';
+                      const jobEnd = row[colMap.jobEnd] || '';
+                      
+                      let durY = 0, durM = 0, totalDur = 0;
+                      if(jobStart && jobEnd) {
+                          // Simple date calc attempt (assuming YYYY-MM-DD or excel date)
+                          // For simplicity, relying on manual check if format varies
+                      }
+
+                      p.jobs.push({
+                          id: Date.now() + i + 999,
+                          jobName: row[colMap.jobName],
+                          startDate: jobStart,
+                          endDate: jobEnd,
+                          durationYears: durY,
+                          durationMonths: durM,
+                          duration: totalDur,
+                          weight: Number(row[colMap.w]) || 0,
+                          squatting: Number(row[colMap.s]) || 0,
+                          burden: determineBurdenLevel(Number(row[colMap.w])||0, Number(row[colMap.s])||0),
+                          evidence: { 
+                              health: isCheckedCell(row[colMap.evHealth]), 
+                              employ: isCheckedCell(row[colMap.evEmploy]), 
+                              income: isCheckedCell(row[colMap.evIncome]), 
+                              etc: isCheckedCell(row[colMap.evEtc]) 
+                          },
+                          auxiliary: { 
+                              stairs: isCheckedCell(row[colMap.auxStairs]), 
+                              twisting: isCheckedCell(row[colMap.auxTwist]), 
+                              startStop: isCheckedCell(row[colMap.auxStartStop]), 
+                              narrow: isCheckedCell(row[colMap.auxNarrow]), 
+                              impact: isCheckedCell(row[colMap.auxImpact]), 
+                              jump: isCheckedCell(row[colMap.auxJump]) 
+                          }
+                      });
+                  }
+              }
+              // Finalize Patients
+              Object.values(patientMap).forEach(p => {
+                  if (p.jobs.length === 0) p.jobs.push(createNewPatient().jobs[0]);
+                  if (p.medicalInfo.diagnoses.length === 0) p.medicalInfo.diagnoses.push(createNewPatient().medicalInfo.diagnoses[0]);
+                  newImportedPatients.push(p);
+              });
+
+          } else {
+              // --- DOCUMENT MODE (Existing Logic) ---
+              // One Patient Per Sheet (Parsed by Keywords)
+              let p = createNewPatient(Date.now() + idx, sheetName); 
+              let notes = "";
+              let hasData = false;
+
+              jsonData.forEach((row, rowIndex) => {
+                 if (!row || row.length === 0) return;
+                 row.forEach((cell, cellIndex) => {
+                    if (typeof cell === 'string') {
+                        if (cell.includes("이름/성별")) {
+                            hasData = true;
+                            const val = row[cellIndex + 1];
+                            if (val && typeof val === 'string') {
+                                const parts = val.split('(');
+                                if (parts[0]) p.basicInfo.name = parts[0].trim();
+                                if (parts[1]) p.basicInfo.gender = parts[1].includes('남') ? 'M' : 'F';
+                            }
+                        }
+                        if (cell.includes("키/몸무게")) {
+                            const val = row[cellIndex + 1];
+                            if (val && typeof val === 'string') {
+                                const parts = val.split('/');
+                                if (parts[0]) p.basicInfo.height = parts[0].replace(/[^0-9.]/g, '');
+                                if (parts[1]) p.basicInfo.weight = parts[1].replace(/[^0-9.]/g, '');
+                            }
+                        }
+                        if (cell.includes("생년월일")) p.basicInfo.birthDate = row[cellIndex + 1] || '';
+                        if (cell.includes("재해일자")) p.basicInfo.injuryDate = row[cellIndex + 1] || '';
+                        if (cell.includes("특이사항")) notes = row[cellIndex + 1] || '';
+                    }
+                 });
+
+                 if (row.includes("직종") && row.includes("근무시작")) {
+                     p.jobs = []; 
+                     let i = rowIndex + 1;
+                     while (i < jsonData.length) {
+                         const jobRow = jsonData[i];
+                         if (!jobRow || !jobRow[0]) break;
+                         
+                         let durY = 0, durM = 0;
+                         const durStr = jobRow[3] ? String(jobRow[3]) : '';
+                         if(durStr.includes('년')) {
+                             durY = parseInt(durStr.split('년')[0]) || 0;
+                             if(durStr.includes('개월')) durM = parseInt(durStr.split('년')[1].replace('개월','')) || 0;
+                         } else {
+                             durY = parseFloat(durStr) || 0; 
+                         }
+
+                         p.jobs.push({
+                             id: Date.now() + idx + i, 
+                             jobName: jobRow[0],
+                             startDate: jobRow[1] || '',
+                             endDate: jobRow[2] || '',
+                             durationYears: durY,
+                             durationMonths: durM,
+                             duration: durY + (durM/12),
+                             evidence: {
+                                 health: jobRow[4] === 'V', employ: jobRow[5] === 'V', income: jobRow[6] === 'V', etc: jobRow[7] === 'V'
+                             },
+                             weight: 0, squatting: 0, burden: determineBurdenLevel(0,0),
+                             auxiliary: { stairs: false, twisting: false, startStop: false, narrow: false, impact: false, jump: false }
+                         });
+                         i++;
                      }
-
-                     p.jobs.push({
-                         id: Date.now() + idx + i, 
-                         jobName: jobRow[0],
-                         startDate: jobRow[1] || '',
-                         endDate: jobRow[2] || '',
-                         durationYears: durY,
-                         durationMonths: durM,
-                         duration: durY + (durM/12),
-                         evidence: {
-                             health: jobRow[4] === 'V', employ: jobRow[5] === 'V', income: jobRow[6] === 'V', etc: jobRow[7] === 'V'
-                         },
-                         weight: 0, squatting: 0, burden: determineBurdenLevel(0,0),
-                         auxiliary: { stairs: false, twisting: false, startStop: false, narrow: false, impact: false, jump: false }
-                     });
-                     i++;
                  }
-             }
-          });
+              });
 
-          if (p.basicInfo.name) p.name = p.basicInfo.name;
-          if (notes) p.medicalInfo.notes = notes;
-          if (p.basicInfo.name || p.jobs.length > 0) newImportedPatients.push(p);
+              if (hasData || p.jobs.length > 0) {
+                  if (p.basicInfo.name) p.name = p.basicInfo.name;
+                  if (notes) p.medicalInfo.notes = notes;
+                  newImportedPatients.push(p);
+              }
+          }
       });
 
       if (newImportedPatients.length > 0) {
@@ -442,7 +611,7 @@ export default function App() {
               setActiveTabId(newImportedPatients[0].id);
           }
       } else {
-          alert("유효한 데이터를 찾지 못했습니다.");
+          alert("유효한 데이터를 찾지 못했습니다. 엑셀 양식을 확인해주세요.");
       }
     };
     reader.readAsBinaryString(file);
@@ -624,8 +793,8 @@ export default function App() {
             <div className="h-14 flex items-center justify-between">
                 <div className="flex items-center gap-2 shrink-0">
                     <Activity className="text-blue-600" size={24} />
-                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.16 (Names Fixed)</span></h1>
-                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.16</h1>
+                    <h1 className="text-lg font-bold text-slate-800 hidden md:block">근골격계 질환 업무관련성 평가 <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-1 rounded">v2.17 (Smart Import)</span></h1>
+                    <h1 className="text-lg font-bold text-slate-800 md:hidden">업무관련성 평가 v2.17</h1>
                 </div>
                 
                 <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
